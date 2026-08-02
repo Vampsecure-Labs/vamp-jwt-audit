@@ -1,0 +1,2 @@
+rich>=13.7.0
+# Opcional: cryptography>=41.0 (para RS256→HS256 con --pubkey)
