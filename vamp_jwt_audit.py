@@ -69,19 +69,18 @@ from rich.panel import Panel
 from rich.table import Table
 
 
-VERSION   = "1.0"
+VERSION   = "1.0.1"
 TOOL_NAME = "vamp-jwt-audit"
 
 console = Console()
 
 BANNER = r"""
-  ██╗██╗    ██╗████████╗      █████╗ ██╗   ██╗██████╗ ██╗████████╗
-  ██║██║    ██║╚══██╔══╝     ██╔══██╗██║   ██║██╔══██╗██║╚══██╔══╝
-  ██║██║ █╗ ██║   ██║        ███████║██║   ██║██║  ██║██║   ██║
-  ██║██║███╗██║   ██║        ██╔══██║██║   ██║██║  ██║██║   ██║
-  ██║╚███╔███╔╝   ██║        ██║  ██║╚██████╔╝██████╔╝██║   ██║
-  ╚═╝ ╚══╝╚══╝    ╚═╝        ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝   ╚═╝
-     by VampSecure Studios · vamp-jwt-audit v1.0 · JWT Security Auditor
+  ____   ____    _    __  __ ____  _____ ____ _   _ ____  _____   _        _    ____ ____
+ \ \ / / _  |  / \  |  \/  |  _ \/ ____/ ___| | | |  _ \| ____| | |      / \  | __ ) ___|
+  \ V / (_| | / _ \ | |\/| | |_) \___ \| |___| | | | |_) |  _|   | |     / _ \ |  _ \___ \
+   | |  \__, |/ ___ \| |  | |  __/ ___) |___  | |_| |  _ <| |___  | |___ / ___ \| |_) |__) |
+   |_|     /_/_/   \_|_|  |_|_|   |____/\____|\___/|_| \_|_____| |_____/_/   \_|____/____/
+     by Antonio Hernandez "Belky" — VampSecure Studios · vamp-jwt-audit v1.0.1 · JWT Security Auditor
      ─────────────────────────────────────────────────────────────────
      USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -560,7 +559,7 @@ def analyze_header(components: JWTComponents) -> List[Finding]:
 
 
 # =============================================================================
-# ORQUESTADOR DE AUDITORÍA
+# MOTOR PRINCIPAL DE AUDITORÍA
 # =============================================================================
 
 def audit_token(
@@ -971,10 +970,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Punto de entrada principal."""
+    console.print(BANNER, style="bold magenta")
     args = parse_args()
-
-    if not args.quiet:
-        console.print(BANNER, style="bold magenta")
 
     # Cargar tokens
     tokens: List[str] = []
