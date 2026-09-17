@@ -60,6 +60,7 @@ import hmac
 import json
 import sys
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -69,7 +70,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 
-VERSION   = "1.0.1"
+VERSION   = "1.1.0"
 TOOL_NAME = "vamp-jwt-audit"
 
 console = Console()
@@ -80,7 +81,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-jwt-audit v1.0.1 · JWT Security Auditor
+  vamp-jwt-audit v1.1.0 · JWT Security Auditor
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -562,6 +563,168 @@ def analyze_header(components: JWTComponents) -> List[Finding]:
 # MOTOR PRINCIPAL DE AUDITORÍA
 # =============================================================================
 
+# =============================================================================
+# ANÁLISIS DE FLUJO OAUTH 2.0
+# =============================================================================
+
+def analyze_oauth_url(url: str) -> List[Finding]:
+    """
+    Analiza una URL de autorización OAuth 2.0 en busca de problemas de seguridad.
+
+    No realiza ninguna petición de red: solo parsea el URL con urllib.parse.
+
+    Checks implementados
+    --------------------
+    · state ausente          → CRITICAL (CSRF en código de autorización)
+    · code_challenge ausente → HIGH (sin PKCE, interceptación del código)
+    · response_type=token    → HIGH (flujo implícito obsoleto, token en URL)
+    · redirect_uri ausente   → MEDIUM (destino de redirección no verificable)
+    · scope permisivo        → INFO (scopes peligrosos como 'admin' o '*')
+
+    Parámetros
+    ----------
+    url : str  — URL de autorización OAuth 2.0 (p. ej. de un botón "Iniciar sesión")
+
+    Retorna
+    -------
+    List[Finding]  — Hallazgos encontrados en el URL
+    """
+    hallazgos: List[Finding] = []
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    except Exception as exc:
+        hallazgos.append(Finding(
+            severity    = "INFO",
+            title       = "URL OAuth inválida o no parseable",
+            description = f"No se pudo parsear el URL de autorización OAuth: {exc}",
+            evidence    = url[:200],
+        ))
+        return hallazgos
+
+    # ── Parámetro 'state' ─────────────────────────────────────────────────────
+    # Su ausencia permite ataques CSRF: el atacante puede redirigir al usuario
+    # a completar el flujo OAuth con el código del atacante (account takeover).
+    if "state" not in params:
+        hallazgos.append(Finding(
+            severity    = "CRITICAL",
+            title       = "[OAUTH] Parámetro 'state' ausente — riesgo CSRF",
+            description = (
+                "El URL de autorización OAuth no incluye el parámetro 'state'. "
+                "Este parámetro es el mecanismo anti-CSRF del flujo OAuth 2.0: "
+                "sin él, un atacante puede engañar al usuario para que complete "
+                "un flujo OAuth malicioso, pudiendo vincular la cuenta de la víctima "
+                "con la cuenta del atacante (CSRF → Account Takeover)."
+            ),
+            evidence    = url[:300],
+            remediation = (
+                "Generar un valor 'state' aleatorio e impredecible antes de redirigir:\n"
+                "  state = secrets.token_urlsafe(32)\n"
+                "  session['oauth_state'] = state\n"
+                "Verificar que el 'state' recibido en el callback coincide con el de la sesión.\n"
+                "Ref: RFC 6749 §10.12 — CSRF"
+            ),
+        ))
+    else:
+        state_val = params["state"][0]
+        if len(state_val) < 8:
+            hallazgos.append(Finding(
+                severity    = "HIGH",
+                title       = "[OAUTH] Parámetro 'state' demasiado corto (posible valor fijo)",
+                description = (
+                    f"El valor del parámetro 'state' ({state_val!r}) es muy corto ({len(state_val)} chars). "
+                    "Un valor fijo o predecible no proporciona protección CSRF real."
+                ),
+                evidence    = f"state={state_val}",
+                remediation = "Usar un valor 'state' de al menos 32 bytes aleatorios (secrets.token_urlsafe(32)).",
+            ))
+
+    # ── PKCE (code_challenge) ─────────────────────────────────────────────────
+    # Su ausencia permite a un atacante interceptar el código de autorización
+    # (p. ej. en apps nativas via custom URL schemes) y canjearlo por tokens.
+    response_type = params.get("response_type", [""])[0].lower()
+    if response_type == "code" and "code_challenge" not in params:
+        hallazgos.append(Finding(
+            severity    = "HIGH",
+            title       = "[OAUTH] PKCE (code_challenge) ausente — interceptación del código posible",
+            description = (
+                "El flujo de código de autorización no usa PKCE (Proof Key for Code Exchange). "
+                "Sin PKCE, un atacante que intercepte el código de autorización "
+                "(por ej. en apps móviles mediante un URI scheme malicioso) puede canjearlo "
+                "por tokens de acceso sin conocer el secreto del cliente."
+            ),
+            evidence    = url[:300],
+            remediation = (
+                "Implementar PKCE en el cliente:\n"
+                "  code_verifier  = secrets.token_urlsafe(64)\n"
+                "  code_challenge = base64url(sha256(code_verifier))\n"
+                "Añadir code_challenge y code_challenge_method=S256 al URL de autorización.\n"
+                "Ref: RFC 7636 — PKCE para clientes públicos"
+            ),
+        ))
+
+    # ── Flujo implícito (response_type=token) ─────────────────────────────────
+    # El flujo implícito devuelve el access_token directamente en el fragment de la URL
+    # de redirección, exponiéndolo en el historial del navegador, logs de servidor
+    # y pudiendo ser robado via XSS o Referer header.
+    if response_type == "token":
+        hallazgos.append(Finding(
+            severity    = "HIGH",
+            title       = "[OAUTH] Flujo implícito (response_type=token) — token expuesto en URL",
+            description = (
+                "El URL de autorización usa response_type=token, lo que corresponde al "
+                "flujo implícito de OAuth 2.0, obsoleto y desaconsejado por la RFC 9700 y "
+                "las guías de seguridad actuales (OAuth 2.0 Security BCP).\n"
+                "Riesgos:\n"
+                "  · El access_token aparece en el fragment URI (#) de la URL de redirección\n"
+                "  · Queda expuesto en el historial del navegador, logs del proxy y Referer\n"
+                "  · Un script XSS en la página de callback puede leer el token desde location.hash\n"
+                "  · No soporta refresh tokens"
+            ),
+            evidence    = f"response_type={response_type}  URL: {url[:200]}",
+            remediation = (
+                "Migrar al flujo de código de autorización con PKCE (response_type=code + code_challenge).\n"
+                "Para SPAs: usar código + PKCE en lugar del flujo implícito.\n"
+                "Para apps móviles: usar código + PKCE con redirect a localhost o URI scheme nativo.\n"
+                "Ref: RFC 9700 §2.1.2 — flujo implícito desaconsejado"
+            ),
+        ))
+
+    # ── redirect_uri ──────────────────────────────────────────────────────────
+    if "redirect_uri" not in params:
+        hallazgos.append(Finding(
+            severity    = "MEDIUM",
+            title       = "[OAUTH] redirect_uri ausente en el URL de autorización",
+            description = (
+                "El URL de autorización no incluye el parámetro redirect_uri. "
+                "Aunque el servidor puede tener un URI de redirección registrado por defecto, "
+                "su ausencia en el request impide verificar que el cliente está solicitando "
+                "una redirección a un destino conocido y registrado."
+            ),
+            evidence    = url[:200],
+            remediation = "Incluir siempre redirect_uri explícitamente y verificar que coincide con el registrado.",
+        ))
+
+    # ── Scopes peligrosos ─────────────────────────────────────────────────────
+    scope_val = params.get("scope", [""])[0].lower()
+    peligrosos = [s for s in ["admin", "write:*", "read:*", "*", "root", "superuser"]
+                  if s in scope_val]
+    if peligrosos:
+        hallazgos.append(Finding(
+            severity    = "INFO",
+            title       = f"[OAUTH] Scopes potencialmente permisivos: {', '.join(peligrosos)}",
+            description = (
+                f"El URL de autorización solicita los siguientes scopes: {scope_val!r}. "
+                "Algunos de ellos pueden otorgar permisos excesivos al cliente OAuth."
+            ),
+            evidence    = f"scope={scope_val}",
+            remediation = "Aplicar el principio de mínimo privilegio: solicitar solo los scopes estrictamente necesarios.",
+        ))
+
+    return hallazgos
+
+
 def audit_token(
     token: str,
     wordlist: Optional[List[str]] = None,
@@ -607,6 +770,38 @@ def audit_token(
 
     # Fase 3: Análisis de claims
     result.findings.extend(analyze_claims(components))
+
+    # Fase 3b: Detección de posible flujo implícito OAuth
+    # Si el token tiene vida muy corta y sin refresh_token, puede proceder de flujo implícito
+    payload = components.payload
+    exp = payload.get("exp")
+    iat = payload.get("iat")
+    if exp is not None and iat is not None:
+        try:
+            vida_seg = int(exp) - int(iat)
+            # Un token de flujo implícito suele tener vigencia <= 1 hora y no lleva refresh_token
+            if 0 < vida_seg <= 3600 and "refresh_token" not in payload:
+                result.findings.append(Finding(
+                    severity    = "LOW",
+                    title       = "[OAUTH] Token con vigencia corta sin refresh_token — posible flujo implícito",
+                    description = (
+                        f"El token tiene una vigencia de {vida_seg // 60} minutos (exp-iat={vida_seg}s) "
+                        "y no contiene claim 'refresh_token'. Este patrón es característico de tokens "
+                        "emitidos mediante el flujo implícito de OAuth 2.0, que devuelve el access_token "
+                        "directamente en la URL de redirección, exponiéndolo a robo via historial "
+                        "del navegador, logs de proxy o ataques XSS sobre la URL de callback.\n"
+                        "Nota: este hallazgo es indicativo, no determinista. "
+                        "Usar --oauth-url para analizar el URL de autorización directamente."
+                    ),
+                    evidence    = f"exp={exp}  iat={iat}  vigencia={vida_seg}s ({vida_seg // 60}min)  sin refresh_token",
+                    remediation = (
+                        "Si el token procede de un flujo implícito, migrar al flujo de código "
+                        "de autorización con PKCE (response_type=code + code_challenge).\n"
+                        "Ref: RFC 9700 §2.1.2 — el flujo implícito está desaconsejado"
+                    ),
+                ))
+        except (TypeError, ValueError):
+            pass
 
     # Fase 4: Token alg=none
     result.alg_none_token = craft_alg_none_token(components)
@@ -941,7 +1136,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     src = p.add_argument_group("Origen del token")
-    grp = src.add_mutually_exclusive_group(required=True)
+    grp = src.add_mutually_exclusive_group(required=False)
     grp.add_argument("--token",  "-t", metavar="JWT",
                      help="Token JWT a auditar (en línea de comandos)")
     grp.add_argument("--file",   "-f", metavar="FILE",
@@ -956,6 +1151,12 @@ def parse_args() -> argparse.Namespace:
                      help="Clave pública RSA PEM para generar token RS256→HS256")
     atk.add_argument("--no-bruteforce", action="store_true",
                      help="Omitir fase de fuerza bruta de secreto (más rápido)")
+    atk.add_argument("--oauth-url", metavar="URL",
+                     help=(
+                         "URL de autorización OAuth 2.0 a analizar (sin realizar petición de red). "
+                         "Comprueba: state (CSRF), code_challenge (PKCE), response_type=token (flujo implícito), "
+                         "redirect_uri y scopes permisivos. Compatible con --token (análisis conjunto) o solo."
+                     ))
 
     out = p.add_argument_group("Salida")
     out.add_argument("--json", metavar="FILE", help="Guardar resultados en JSON")
@@ -986,8 +1187,40 @@ def main() -> None:
     elif args.stdin:
         tokens = [l.strip() for l in sys.stdin.readlines() if l.strip()]
 
+    # Analizar URL OAuth si se proporcionó (se puede usar sin token)
+    oauth_url = getattr(args, "oauth_url", None)
+    if oauth_url:
+        console.rule("[bold magenta]Análisis OAuth 2.0 URL[/]")
+        console.print(f"  [bold]URL:[/] {oauth_url[:120]}{'...' if len(oauth_url) > 120 else ''}")
+        oauth_findings = analyze_oauth_url(oauth_url)
+        if oauth_findings:
+            from rich.table import Table as _Table
+            tbl = _Table(show_header=True, header_style="bold dim", expand=True)
+            tbl.add_column("Severidad", width=10)
+            tbl.add_column("Título")
+            for f in oauth_findings:
+                color = {"CRITICAL": "bold red", "HIGH": "bold yellow",
+                         "MEDIUM": "bold magenta", "LOW": "cyan", "INFO": "green"}.get(f.severity, "white")
+                tbl.add_row(
+                    f"[{color}]{f.severity}[/{color}]",
+                    f.title,
+                )
+            console.print(tbl)
+            for f in oauth_findings:
+                if f.evidence:
+                    console.print(f"  [dim]Evidencia: {f.evidence[:200]}[/]")
+                if f.remediation:
+                    from rich.panel import Panel as _Panel
+                    console.print(_Panel(f.remediation, title="Remediación", border_style="dim"))
+        else:
+            console.print("  [green]Sin hallazgos en el URL OAuth analizado.[/]")
+        console.print()
+
     if not tokens:
-        console.print("[bold red]  ERROR: No se han proporcionado tokens JWT.[/]")
+        if oauth_url:
+            # Si solo se analizó el URL OAuth, salir limpiamente
+            sys.exit(0)
+        console.print("[bold red]  ERROR: No se han proporcionado tokens JWT ni --oauth-url.[/]")
         sys.exit(1)
 
     # Cargar wordlist adicional
