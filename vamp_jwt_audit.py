@@ -60,7 +60,9 @@ import hmac
 import json
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -159,6 +161,9 @@ class AuditResult:
     cracked_secret: Optional[str]       = None
     alg_none_token: Optional[str]       = None
     rs256_hs256_token: Optional[str]    = None
+    # Token RS256→HS256 generado con clave pública obtenida automáticamente del JWKS
+    jwks_rs256_hs256_token: Optional[str] = None
+    jwks_pubkey_pem: Optional[str]        = None
 
     @property
     def max_severity(self) -> str:
@@ -183,6 +188,166 @@ def _b64url_decode(s: str) -> bytes:
 def _b64url_encode(data: bytes) -> str:
     """Codifica bytes en base64url sin padding."""
     return base64.b64encode(data).decode().replace("+", "-").replace("/", "_").rstrip("=")
+
+
+# =============================================================================
+# OBTENCIÓN DE CLAVE PÚBLICA DESDE JWKS
+# =============================================================================
+
+def _jwk_rsa_to_pem(n_b64: str, e_b64: str) -> Optional[str]:
+    """
+    Construye una clave pública RSA en formato PEM a partir de los componentes
+    n y e de un JWK (base64url).
+
+    Intenta primero con la biblioteca `cryptography` si está disponible;
+    si no, construye el SubjectPublicKeyInfo (DER → PEM) manualmente sin
+    dependencias externas.
+
+    Parámetros
+    ----------
+    n_b64 : str  — Módulo RSA en base64url (campo n del JWK)
+    e_b64 : str  — Exponente público en base64url (campo e del JWK)
+
+    Retorna
+    -------
+    str  — Clave pública RSA en PEM, o None si la construcción falla
+    """
+    # Intentar primero con cryptography (más fiable para claves grandes)
+    try:
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        def _decode_int(b64: str) -> int:
+            b = base64.urlsafe_b64decode(b64 + "==")
+            return int.from_bytes(b, "big")
+
+        pub = RSAPublicNumbers(
+            _decode_int(e_b64), _decode_int(n_b64)
+        ).public_key(default_backend())
+        return pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
+    except ImportError:
+        pass  # cryptography no instalada; continuar con construcción manual
+    except Exception:
+        return None
+
+    # Construcción manual de SubjectPublicKeyInfo (DER → PEM) sin dependencias externas.
+    # Formato: SEQUENCE { AlgorithmIdentifier, BIT STRING { SEQUENCE { INTEGER n, INTEGER e } } }
+    try:
+        def _b64url_raw(s: str) -> bytes:
+            """Decodifica base64url a bytes sin añadir padding innecesario."""
+            s = s.replace("-", "+").replace("_", "/")
+            s += "=" * ((-len(s)) % 4)
+            return base64.b64decode(s)
+
+        def _asn1_tlv(tag: int, value: bytes) -> bytes:
+            """Codifica un elemento TLV ASN.1 con longitud DER correcta."""
+            ln = len(value)
+            if ln < 128:
+                length = bytes([ln])
+            elif ln < 256:
+                length = bytes([0x81, ln])
+            else:
+                length = bytes([0x82, ln >> 8, ln & 0xFF])
+            return bytes([tag]) + length + value
+
+        def _asn1_int(raw: bytes) -> bytes:
+            """Codifica un INTEGER ASN.1 desde bytes big-endian sin signo."""
+            raw = raw.lstrip(b"\x00") or b"\x00"
+            if raw[0] & 0x80:  # bit de signo activo → añadir byte 0x00
+                raw = b"\x00" + raw
+            return _asn1_tlv(0x02, raw)
+
+        n_bytes = _b64url_raw(n_b64)
+        e_bytes = _b64url_raw(e_b64)
+
+        # SEQUENCE { INTEGER n, INTEGER e } — cuerpo de la clave RSA
+        key_seq = _asn1_tlv(0x30, _asn1_int(n_bytes) + _asn1_int(e_bytes))
+
+        # BIT STRING: prefijo 0x00 (cero bits ignorados) + secuencia de clave
+        bit_string = _asn1_tlv(0x03, b"\x00" + key_seq)
+
+        # AlgorithmIdentifier: SEQUENCE { OID rsaEncryption (1.2.840.113549.1.1.1), NULL }
+        alg_id = _asn1_tlv(0x30,
+            b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01"  # OID 1.2.840.113549.1.1.1
+            b"\x05\x00"                                          # NULL
+        )
+
+        # SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
+        spki = _asn1_tlv(0x30, alg_id + bit_string)
+
+        pem_b64 = base64.b64encode(spki).decode()
+        return "-----BEGIN PUBLIC KEY-----\n" + pem_b64 + "\n-----END PUBLIC KEY-----\n"
+    except Exception:
+        return None
+
+
+def fetch_jwks_public_key(issuer_or_url: str) -> Optional[str]:
+    """
+    Obtiene la primera clave pública RSA del JWKS de un servidor OIDC/OAuth 2.0.
+
+    Proceso de descubrimiento
+    -------------------------
+    1. Si la URL ya termina en .json, se usa directamente como JWKS.
+    2. Intenta {issuer}/.well-known/jwks.json
+    3. Intenta {issuer}/.well-known/openid-configuration → extrae jwks_uri → descarga JWKS
+
+    La clave RSA se convierte a PEM mediante `_jwk_rsa_to_pem`.
+    Si la biblioteca `cryptography` no está disponible se usa la construcción
+    manual en puro Python; en ese caso el PEM es igualmente válido para HMAC.
+
+    Parámetros
+    ----------
+    issuer_or_url : str  — URL base del emisor o URL directa del endpoint JWKS
+
+    Retorna
+    -------
+    str  — Primera clave RSA pública en PEM, o None si no se pudo obtener
+    """
+    def _fetch_json(url: str) -> Optional[dict]:
+        """Descarga y parsea JSON con timeout de 5 segundos."""
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": f"vamp-jwt-audit/{VERSION}"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception:
+            return None
+
+    def _extract_rsa_pem(jwks: dict) -> Optional[str]:
+        """Extrae la primera clave RSA (use=sig o sin use) del JWKS y la convierte a PEM."""
+        for key in jwks.get("keys", []):
+            if key.get("kty") == "RSA" and "n" in key and "e" in key:
+                # Preferir claves de firma explícitas
+                if key.get("use", "sig") == "sig":
+                    return _jwk_rsa_to_pem(key["n"], key["e"])
+        return None
+
+    base = issuer_or_url.rstrip("/")
+
+    # Caso 1: URL directa al JWKS (ya termina en .json)
+    if base.endswith(".json"):
+        data = _fetch_json(base)
+        if data and "keys" in data:
+            return _extract_rsa_pem(data)
+        return None
+
+    # Caso 2: {issuer}/.well-known/jwks.json
+    data = _fetch_json(f"{base}/.well-known/jwks.json")
+    if data and "keys" in data:
+        pem = _extract_rsa_pem(data)
+        if pem:
+            return pem
+
+    # Caso 3: descubrimiento OIDC → jwks_uri
+    oidc = _fetch_json(f"{base}/.well-known/openid-configuration")
+    if oidc and "jwks_uri" in oidc:
+        jwks_data = _fetch_json(oidc["jwks_uri"])
+        if jwks_data and "keys" in jwks_data:
+            return _extract_rsa_pem(jwks_data)
+
+    return None
 
 
 def decode_jwt(token: str) -> JWTComponents:
@@ -560,6 +725,125 @@ def analyze_header(components: JWTComponents) -> List[Finding]:
 
 
 # =============================================================================
+# DETECCIÓN DE FRAMEWORKS VULNERABLES
+# =============================================================================
+
+def detect_vulnerable_frameworks(
+    components: JWTComponents,
+    check_url: Optional[str] = None,
+) -> List[Finding]:
+    """
+    Detecta indicadores de frameworks con vulnerabilidades JWT conocidas.
+
+    CVEs cubiertos
+    --------------
+    · CVE-2026-22817 — Hono < 4.11.4: confusión de algoritmo JWT. La verificación
+      del token acepta HS256 firmado con la clave pública RSA como secreto HMAC.
+    · CVE-2026-33757 — OpenBao / HashiCorp Vault: bypass del flujo OIDC mediante
+      callback_mode=direct sin confirmación de consentimiento (login CSRF).
+
+    Estrategia de detección
+    -----------------------
+    · Hono  → cabecera de respuesta X-Powered-By que contenga "Hono"
+    · OpenBao/Vault → claim `iss` contiene "vault", "openbao" o "/auth/" (patrones
+      típicos de Vault) y/o cabecera X-Vault-Request: true en la respuesta HTTP
+
+    Si se proporciona check_url, se realiza una petición GET para leer cabeceras
+    de respuesta; si no, la detección es puramente estática sobre los claims.
+
+    Parámetros
+    ----------
+    components : JWTComponents  — Token decodificado
+    check_url  : str            — URL a sondear (issuer o JWKS URL); opcional
+
+    Retorna
+    -------
+    List[Finding]  — Hallazgos de detección de frameworks vulnerables
+    """
+    findings: List[Finding] = []
+    iss = str(components.payload.get("iss", ""))
+    iss_lower = iss.lower()
+
+    # Recoger cabeceras de respuesta HTTP (si hay URL que sondear)
+    response_headers: Dict[str, str] = {}
+    if check_url:
+        try:
+            req = urllib.request.Request(
+                check_url,
+                headers={"User-Agent": f"vamp-jwt-audit/{VERSION}"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                response_headers = {k.lower(): v for k, v in resp.headers.items()}
+        except Exception:
+            pass  # Sin acceso al endpoint; continuar con detección estática
+
+    powered_by    = response_headers.get("x-powered-by", "").lower()
+    vault_header  = response_headers.get("x-vault-request", "").lower()
+
+    hono_detected    = "hono" in powered_by
+    openbao_detected = (
+        vault_header == "true"
+        or any(s in iss_lower for s in ("vault", "openbao", "/auth/"))
+    )
+
+    # ── Finding JWT-FRAME-001: Hono potencialmente vulnerable ────────────────
+    if hono_detected:
+        findings.append(Finding(
+            severity    = "HIGH",
+            title       = "[JWT-FRAME-001] Framework Hono detectado — posible CVE-2026-22817",
+            description = (
+                "El endpoint responde con la cabecera 'X-Powered-By: Hono'. "
+                "Las versiones de Hono anteriores a 4.11.4 son vulnerables a confusión "
+                "de algoritmo JWT (CVE-2026-22817): la validación acepta tokens HS256 "
+                "firmados con la clave pública RSA como secreto HMAC. "
+                "Usar el token RS256→HS256 generado para verificar si el servidor es vulnerable."
+            ),
+            evidence    = (
+                f"X-Powered-By: {response_headers.get('x-powered-by', 'Hono')}  "
+                f"URL: {check_url}"
+            ),
+            remediation = (
+                "Actualizar Hono a v4.11.4 o superior.\n"
+                "Fijar el algoritmo JWT aceptado (solo RS256 o solo HS256, nunca ambos).\n"
+                "Ref: CVE-2026-22817 — github.com/honojs/hono/security/advisories"
+            ),
+        ))
+
+    # ── Finding JWT-OPENBAO-001: OpenBao/Vault — callback_mode=direct ────────
+    if openbao_detected:
+        # Construir URL de prueba para el bypass CVE-2026-33757
+        _base = (check_url or iss).rstrip("/")
+        test_url = f"{_base}/v1/auth/oidc/oidc/callback?code=TEST&state=TEST&callback_mode=direct"
+
+        findings.append(Finding(
+            severity    = "CRITICAL",
+            title       = "[JWT-OPENBAO-001] OpenBao/Vault detectado — posible CVE-2026-33757",
+            description = (
+                "Se detecta un emisor de tokens OpenBao o HashiCorp Vault. "
+                "CVE-2026-33757 afecta al endpoint OIDC con callback_mode=direct: "
+                "el servidor procesa el callback OIDC sin solicitar confirmación al usuario, "
+                "permitiendo a un atacante forzar el inicio de sesión de la víctima "
+                "en la cuenta del atacante (login CSRF / account takeover). "
+                "Prueba: enviar GET al endpoint de prueba y observar si se procesa "
+                "sin autenticación previa."
+            ),
+            evidence    = (
+                f"iss={iss or 'N/A'}"
+                + (f"  X-Vault-Request: true" if vault_header == "true" else "")
+                + f"\nURL de prueba: {test_url}"
+            ),
+            remediation = (
+                "Actualizar OpenBao/Vault a la versión parcheada.\n"
+                "Deshabilitar o restringir el endpoint OIDC callback_mode=direct.\n"
+                "Añadir verificación de estado CSRF en el flujo OIDC.\n"
+                "Ref: CVE-2026-33757"
+            ),
+        ))
+
+    return findings
+
+
+# =============================================================================
 # MOTOR PRINCIPAL DE AUDITORÍA
 # =============================================================================
 
@@ -729,6 +1013,7 @@ def audit_token(
     token: str,
     wordlist: Optional[List[str]] = None,
     pubkey_pem: Optional[str] = None,
+    jwks_url: Optional[str] = None,
 ) -> AuditResult:
     """
     Ejecuta la auditoría completa de un JWT.
@@ -741,12 +1026,15 @@ def audit_token(
     4. Construcción de token alg=none manipulado
     5. Fuerza bruta de secreto HMAC (wordlist integrada + externa)
     6. Construcción de token RS256→HS256 (si --pubkey)
+    6b. Obtención de clave JWKS real y confusión RS256→HS256 (CVE-2026-22817)
+    7. Detección de frameworks vulnerables (Hono / OpenBao, CVE-2026-22817/33757)
 
     Parámetros
     ----------
     token     : str           — El token JWT a auditar
     wordlist  : List[str]     — Secretos adicionales para fuerza bruta
-    pubkey_pem: str           — Clave pública RSA en PEM para RS256→HS256
+    pubkey_pem: str           — Clave pública RSA en PEM para RS256→HS256 (--pubkey)
+    jwks_url  : str           — URL del JWKS o issuer OIDC para obtener la clave real
 
     Retorna
     -------
@@ -840,6 +1128,52 @@ def audit_token(
                               "Usar la opción 'algorithms=[\"RS256\"]' en la librería JWT del servidor.",
             ))
 
+    # Fase 6b: Obtener clave pública real desde JWKS y ejecutar confusión RS256→HS256
+    # Si ya se proporcionó --pubkey, la clave JWKS actúa como refuerzo adicional.
+    if alg in ("RS256", "RS384", "RS512"):
+        _iss_str = str(components.payload.get("iss", ""))
+        # Prioridad de fuente JWKS: --jwks-url > claim iss (si es URL HTTP)
+        _jwks_source = jwks_url
+        if not _jwks_source and _iss_str.startswith("http"):
+            _jwks_source = _iss_str
+        if _jwks_source:
+            _fetched_pem = fetch_jwks_public_key(_jwks_source)
+            if _fetched_pem:
+                result.jwks_pubkey_pem = _fetched_pem
+                _jwks_token = craft_rs256_hs256_token(components, _fetched_pem)
+                if _jwks_token:
+                    result.jwks_rs256_hs256_token = _jwks_token
+                    result.findings.append(Finding(
+                        severity    = "CRITICAL",
+                        title       = "[JWT-CONF-010] Confusión RS256→HS256 con clave pública JWKS real",
+                        description = (
+                            "Se ha obtenido la clave pública RSA del servidor mediante el JWKS "
+                            "y se ha generado un token HS256 firmado con ella como secreto HMAC. "
+                            "Si el servidor acepta este token, la vulnerabilidad de confusión de "
+                            "algoritmo queda CONFIRMADA (CVE-2026-22817 cluster): cualquier atacante "
+                            "puede forjar tokens arbitrarios usando únicamente la clave pública conocida."
+                        ),
+                        evidence    = (
+                            f"JWKS source: {_jwks_source}\n"
+                            f"Token generado: {_jwks_token[:80]}..."
+                        ),
+                        remediation = (
+                            "Fijar el algoritmo JWT aceptado en el servidor (solo RS256, "
+                            "rechazar HS256 explícitamente en la misma instancia de validación).\n"
+                            "Actualizar la librería JWT a una versión que prevenga la confusión "
+                            "de algoritmo asimétrico/simétrico.\n"
+                            "Ref: CVE-2026-22817"
+                        ),
+                    ))
+
+    # Fase 7: Detección de frameworks vulnerables (Hono CVE-2026-22817, OpenBao CVE-2026-33757)
+    _iss_str7 = str(components.payload.get("iss", ""))
+    _chk_url  = jwks_url or (_iss_str7 if _iss_str7.startswith("http") else None)
+    if _chk_url or any(s in _iss_str7.lower() for s in ("vault", "openbao", "/auth/")):
+        result.findings.extend(
+            detect_vulnerable_frameworks(components, check_url=_chk_url)
+        )
+
     # Ordenar hallazgos por severidad
     result.findings.sort(key=lambda f: f.order)
     return result
@@ -926,10 +1260,15 @@ def print_token_detail(result: AuditResult) -> None:
     if result.cracked_secret is not None:
         console.print(f"\n  [bold red]⚠ Secreto HMAC encontrado:[/] [bold]{result.cracked_secret!r}[/]")
 
-    # RS256→HS256
+    # RS256→HS256 (clave pública manual con --pubkey)
     if result.rs256_hs256_token:
         console.print(f"\n  [bold yellow]Token RS256→HS256 generado (probar en el servidor):[/]")
         console.print(f"  {result.rs256_hs256_token[:80]}...")
+
+    # RS256→HS256 con clave pública obtenida del JWKS real
+    if result.jwks_rs256_hs256_token:
+        console.print(f"\n  [bold red][JWT-CONF-010] Token RS256→HS256 con clave JWKS real (CRITICAL):[/]")
+        console.print(f"  {result.jwks_rs256_hs256_token[:80]}...")
 
 
 def to_json(results: List[AuditResult]) -> str:
@@ -947,9 +1286,10 @@ def to_json(results: List[AuditResult]) -> str:
                  "remediation": f.remediation}
                 for f in r.findings
             ],
-            "cracked_secret":    r.cracked_secret,
-            "alg_none_token":    r.alg_none_token,
-            "rs256_hs256_token": r.rs256_hs256_token,
+            "cracked_secret":         r.cracked_secret,
+            "alg_none_token":         r.alg_none_token,
+            "rs256_hs256_token":      r.rs256_hs256_token,
+            "jwks_rs256_hs256_token": r.jwks_rs256_hs256_token,
         })
     return json.dumps({"generated_by": TOOL_NAME, "version": VERSION, "results": out},
                        indent=2, ensure_ascii=False)
@@ -1123,13 +1463,17 @@ def parse_args() -> argparse.Namespace:
         description=(
             f"VampSecure Labs JWT Audit v{VERSION} — "
             "Análisis de seguridad de JSON Web Tokens: "
-            "decodificación, alg=none, RS256→HS256, fuerza bruta de secreto, análisis de claims."
+            "decodificación, alg=none, RS256→HS256 (con clave JWKS real), "
+            "fuerza bruta de secreto, análisis de claims, "
+            "detección de Hono (CVE-2026-22817) y OpenBao/Vault (CVE-2026-33757)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Ejemplos:
   %(prog)s --token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.xxx
   %(prog)s --token <JWT> --wordlist secretos.txt
   %(prog)s --token <JWT> --pubkey pub.pem
+  %(prog)s --token <JWT> --jwks-url https://auth.ejemplo.com
+  %(prog)s --token <JWT> --jwks-url https://auth.ejemplo.com/.well-known/jwks.json
   %(prog)s --file tokens.txt --json salida.json --html salida.html
   cat token.txt | %(prog)s --stdin
         """,
@@ -1149,6 +1493,15 @@ def parse_args() -> argparse.Namespace:
                      help="Wordlist adicional para fuerza bruta del secreto HMAC")
     atk.add_argument("--pubkey", metavar="FILE",
                      help="Clave pública RSA PEM para generar token RS256→HS256")
+    atk.add_argument("--jwks-url", metavar="URL",
+                     help=(
+                         "URL del JWKS o issuer OIDC para obtener la clave pública del servidor "
+                         "automáticamente y ejecutar el ataque de confusión RS256→HS256 con la "
+                         "clave real (JWT-CONF-010, CVE-2026-22817). "
+                         "Si se omite, se intenta con el claim 'iss' del token si es una URL HTTP. "
+                         "También activa la detección de Hono (CVE-2026-22817) y "
+                         "OpenBao/Vault (CVE-2026-33757) leyendo las cabeceras de respuesta."
+                     ))
     atk.add_argument("--no-bruteforce", action="store_true",
                      help="Omitir fase de fuerza bruta de secreto (más rápido)")
     atk.add_argument("--oauth-url", metavar="URL",
@@ -1233,7 +1586,7 @@ def main() -> None:
             wordlist = [l.strip() for l in wp.read_text(encoding="utf-8").splitlines() if l.strip()]
             console.print(f"  [dim]Wordlist cargada: {len(wordlist)} secretos[/]")
 
-    # Cargar clave pública
+    # Cargar clave pública (--pubkey)
     pubkey_pem: Optional[str] = None
     if args.pubkey:
         pk_path = Path(args.pubkey)
@@ -1242,6 +1595,11 @@ def main() -> None:
         else:
             pubkey_pem = pk_path.read_text(encoding="utf-8")
             console.print(f"  [dim]Clave pública cargada: {args.pubkey}[/]")
+
+    # URL del JWKS o issuer OIDC (--jwks-url)
+    jwks_url_arg: Optional[str] = getattr(args, "jwks_url", None)
+    if jwks_url_arg:
+        console.print(f"  [dim]JWKS URL: {jwks_url_arg}[/]")
 
     # Auditar cada token
     results: List[AuditResult] = []
@@ -1253,6 +1611,7 @@ def main() -> None:
             token,
             wordlist=wordlist if not args.no_bruteforce else None,
             pubkey_pem=pubkey_pem,
+            jwks_url=jwks_url_arg,
         )
         results.append(result)
         print_token_detail(result)
