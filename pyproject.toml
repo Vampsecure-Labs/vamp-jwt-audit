@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vamp-jwt-audit"
-version = "1.1.0"
+version = "1.2.0"
 description = "JWT security auditor — alg=none, RS256-to-HS256 confusion, HMAC brute force"
 readme = "README.md"
 license = { text = "MIT" }

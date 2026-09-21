@@ -72,7 +72,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 
-VERSION   = "1.1.0"
+VERSION   = "1.2.0"
 TOOL_NAME = "vamp-jwt-audit"
 
 console = Console()
