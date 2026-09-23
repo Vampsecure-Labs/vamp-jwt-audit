@@ -72,18 +72,18 @@ from rich.panel import Panel
 from rich.table import Table
 
 
-VERSION   = "1.2.0"
+VERSION   = "1.3.0"
 TOOL_NAME = "vamp-jwt-audit"
 
 console = Console()
 
 BANNER = r"""
-__   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___ 
+__   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
 \ \ / /_\ |  \/  | _ \/ __| __/ __| | | | _ \ __| |    /_\ | _ ) __|
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-jwt-audit v1.1.0 · JWT Security Auditor
+  vamp-jwt-audit v1.3.0 · JWT Security Auditor
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -844,6 +844,186 @@ def detect_vulnerable_frameworks(
 
 
 # =============================================================================
+# ATAQUE KID INJECTION (PATH TRAVERSAL / SQL INJECTION)
+# =============================================================================
+
+def _test_kid_injection(header: Dict, findings: List[Finding]) -> None:
+    """
+    Analiza el campo 'kid' del header JWT en busca de vectores de
+    path traversal y SQL injection de forma pasiva.
+
+    El análisis es puramente estático sobre el header decodificado;
+    no realiza peticiones de red.
+
+    Vectores documentados para prueba manual
+    -----------------------------------------
+    · kid = "../../dev/null" → path traversal; si el servidor carga la clave
+      desde disco y /dev/null devuelve un fichero vacío, la firma HMAC
+      resultante es predecible (HMAC con clave vacía).
+    · kid = "' OR '1'='1" → SQL injection en el verificador de kid
+      si el servidor construye una consulta del tipo:
+      SELECT clave FROM claves WHERE id='<kid>'
+
+    Parámetros
+    ----------
+    header   : Dict          — Cabecera decodificada del JWT
+    findings : List[Finding] — Lista de hallazgos (se modifica in-place)
+    """
+    kid = header.get("kid")
+    if kid is None:
+        return
+
+    kid_str = str(kid)
+
+    # Comprobar si el kid es numérico puro — posible SQL injection indirecta
+    if kid_str.strip().isdigit():
+        findings.append(Finding(
+            severity    = "INFO",
+            title       = "kid numérico — posible SQL injection si el verificador consulta DB",
+            description = (
+                f"El campo 'kid' tiene un valor numérico puro: {kid_str!r}. "
+                "Si el servidor construye una consulta del tipo "
+                "\"SELECT clave FROM claves WHERE id=<kid>\", un atacante que "
+                "controle el kid podría inyectar SQL para seleccionar una clave "
+                "arbitraria o causar un error que bypasee la verificación. "
+                "Valores de ataque sugeridos para prueba manual: "
+                "kid='1 OR 1=1', kid='1; DROP TABLE keys--'."
+            ),
+            evidence    = f"kid={kid_str!r}  (valor numérico puro)",
+            remediation = (
+                "Validar que kid es un UUID o identificador alfanumérico fijo de una lista blanca. "
+                "Si se usa en consultas SQL, emplear consultas parametrizadas (placeholders). "
+                "Nunca construir SQL dinámico con el valor raw del kid."
+            ),
+        ))
+        return
+
+    # Comprobar caracteres sospechosos de path traversal o SQL injection
+    CHARS_SOSPECHOSOS = ("../", "..\\", "'", '"', ";")
+    encontrados = [c for c in CHARS_SOSPECHOSOS if c in kid_str]
+    if encontrados:
+        findings.append(Finding(
+            severity    = "MEDIUM",
+            title       = f"Campo 'kid' con caracteres sospechosos de path traversal/SQLi: {encontrados}",
+            description = (
+                f"El campo 'kid' del header JWT contiene caracteres indicadores de "
+                f"path traversal o SQL injection: {encontrados!r}. "
+                "Si el servidor usa kid directamente para construir rutas de ficheros "
+                "o consultas SQL, puede ser vulnerable. "
+                "Vectores conocidos: 'kid=../../dev/null' causa firma con clave vacía; "
+                "'kid=\\' OR \\'1\\'=\\'1' inyecta SQL en el verificador."
+            ),
+            evidence    = f"kid={kid_str!r}  Caracteres detectados: {encontrados!r}",
+            remediation = (
+                "Validar que 'kid' solo contiene caracteres alfanuméricos, guiones o guiones bajos. "
+                "Usar una lista blanca de identificadores de clave permitidos. "
+                "Nunca usar kid directamente en rutas de sistema de ficheros ni consultas SQL sin sanear."
+            ),
+        ))
+
+
+# =============================================================================
+# ATAQUE jku/x5u INJECTION (JWKS SPOOFING)
+# =============================================================================
+
+def _test_jku_injection(header: Dict, findings: List[Finding]) -> None:
+    """
+    Analiza los campos de URL de clave en el header JWT: jku, x5u, x5c.
+
+    El análisis es puramente estático sobre el header decodificado;
+    no realiza peticiones de red ni descarga ninguna URL.
+
+    Vectores analizados
+    -------------------
+    · jku (JWK Set URL): El servidor puede descargar la clave pública
+      desde esta URL. Un atacante puede apuntar a un servidor controlado
+      por él con una clave pública arbitraria → JWKS spoofing.
+      → HIGH "Header jku presente — posible JWKS spoofing"
+
+    · x5u (X.509 URL): Similar a jku pero para certificados X.509.
+      Permite a un atacante proveer su propio certificado como clave.
+      → HIGH "Header x5u presente — posible X.509 spoofing"
+
+    · x5c (X.509 certificate chain): Certificado incrustado en el token.
+      Si el servidor confía en la clave del x5c sin verificarla contra
+      una CA de confianza, el atacante puede auto-firmarlo.
+      → MEDIUM "Header x5c presente — verificar que la clave no es autocontrolada"
+
+    Parámetros
+    ----------
+    header   : Dict          — Cabecera decodificada del JWT
+    findings : List[Finding] — Lista de hallazgos (se modifica in-place)
+    """
+    # Comprobar jku — URL del conjunto de claves JWK
+    jku = header.get("jku")
+    if jku:
+        findings.append(Finding(
+            severity    = "HIGH",
+            title       = "Header jku presente — posible JWKS spoofing",
+            description = (
+                f"La cabecera JWT incluye el campo 'jku' con valor: {str(jku)!r}. "
+                "El campo jku (JWK Set URL) indica al servidor la URL desde la que "
+                "debe descargar las claves públicas para verificar el token. "
+                "Un atacante puede forjar un token con jku apuntando a un servidor "
+                "controlado por él, haciendo que el servidor descargue y confíe en "
+                "una clave pública del atacante — JWKS spoofing."
+            ),
+            evidence    = f"jku={str(jku)!r}",
+            remediation = (
+                "El servidor NUNCA debe seguir el campo jku del header automáticamente. "
+                "La URL del JWKS debe estar fijada en la configuración del servidor. "
+                "Si el servidor soporta jku, validar que la URL está en una lista blanca "
+                "de dominios permitidos antes de descargar las claves."
+            ),
+        ))
+
+    # Comprobar x5u — URL de certificado X.509
+    x5u = header.get("x5u")
+    if x5u:
+        findings.append(Finding(
+            severity    = "HIGH",
+            title       = "Header x5u presente — posible X.509 spoofing",
+            description = (
+                f"La cabecera JWT incluye el campo 'x5u' con valor: {str(x5u)!r}. "
+                "El campo x5u (X.509 URL) indica al servidor la URL desde la que "
+                "descargar la cadena de certificados para verificar el token. "
+                "Si el servidor sigue esta URL sin validarla, un atacante puede "
+                "proveer su propio certificado X.509 auto-firmado — X.509 URL spoofing."
+            ),
+            evidence    = f"x5u={str(x5u)!r}",
+            remediation = (
+                "El servidor no debe seguir el campo x5u automáticamente. "
+                "Fijar el certificado o la CA de confianza en la configuración del servidor. "
+                "Si se soporta x5u, validar que la URL está en una lista blanca estricta."
+            ),
+        ))
+
+    # Comprobar x5c — Certificado X.509 embebido en el header
+    x5c = header.get("x5c")
+    if x5c:
+        num_certs = len(x5c) if isinstance(x5c, list) else 1
+        findings.append(Finding(
+            severity    = "MEDIUM",
+            title       = "Header x5c presente — verificar que la clave no es autocontrolada",
+            description = (
+                "La cabecera JWT incluye el campo 'x5c' con una cadena de certificados "
+                "X.509 incrustada directamente en el token. "
+                "Si el servidor usa la clave pública del certificado 'x5c' para verificar "
+                "el token sin validar que el certificado fue emitido por una CA de confianza, "
+                "el atacante puede auto-firmar el token con su propia clave privada e incluir "
+                "el certificado correspondiente en x5c — bypass de verificación de firma."
+            ),
+            evidence    = f"x5c presente: {num_certs} certificado(s) incrustado(s)",
+            remediation = (
+                "Verificar que los certificados en x5c están firmados por una CA incluida en la "
+                "lista de confianza del servidor. No confiar en el certificado de x5c sin validación "
+                "de cadena de certificados completa. Preferir fijar las claves públicas en la "
+                "configuración del servidor en lugar de aceptarlas del token."
+            ),
+        ))
+
+
+# =============================================================================
 # MOTOR PRINCIPAL DE AUDITORÍA
 # =============================================================================
 
@@ -1059,7 +1239,13 @@ def audit_token(
     # Fase 3: Análisis de claims
     result.findings.extend(analyze_claims(components))
 
-    # Fase 3b: Detección de posible flujo implícito OAuth
+    # Fase 3b: Análisis de kid injection (path traversal / SQL injection)
+    _test_kid_injection(components.header, result.findings)
+
+    # Fase 3c: Análisis de jku/x5u/x5c injection (JWKS spoofing)
+    _test_jku_injection(components.header, result.findings)
+
+    # Fase 3d: Detección de posible flujo implícito OAuth
     # Si el token tiene vida muy corta y sin refresh_token, puede proceder de flujo implícito
     payload = components.payload
     exp = payload.get("exp")
