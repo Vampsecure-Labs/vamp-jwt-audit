@@ -1,3 +1,4 @@
+<!-- © VampSecure Studios — VampSecure Labs Security Research Division -->
 <h1 align="center">vamp-jwt-audit</h1>
 
 <p align="center">
@@ -29,6 +30,13 @@
 - Optional: `cryptography >= 41.0` — required for `--pubkey` (RS256→HS256 confusion attack)
 
 ## Installation
+
+
+```bash
+pip install vamp-jwt-audit
+# o con Homebrew:
+brew install vampsecure-labs/labs/vamp-jwt-audit
+```
 
 ```bash
 git clone https://github.com/belky-me/vamp-jwt-audit.git
@@ -150,3 +158,6 @@ Use exclusively on systems you own or for which you hold explicit written author
 ---
 
 © VampSecure Studios — VampSecure Labs Security Research Division
+
+## Versión
+v1.3.0 — VampSecure Labs Security Research Division
