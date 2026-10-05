@@ -53,6 +53,8 @@ Dependencias opcionales (cryptography) para RS256→HS256 con --pubkey:
 # Todos los derechos reservados. Uso exclusivo en auditorías autorizadas.
 # =============================================================================
 
+from __future__ import annotations
+
 import argparse
 import base64
 import hashlib
@@ -65,12 +67,10 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-
 
 VERSION   = "1.3.0"
 TOOL_NAME = "vamp-jwt-audit"
@@ -131,11 +131,11 @@ _COMMON_SECRETS = [
 class JWTComponents:
     """Componentes decodificados de un JWT."""
     raw:     str
-    header:  Dict  = field(default_factory=dict)
-    payload: Dict  = field(default_factory=dict)
+    header:  dict  = field(default_factory=dict)
+    payload: dict  = field(default_factory=dict)
     sig_b64: str   = ""
-    parts:   List  = field(default_factory=list)
-    error:   Optional[str] = None
+    parts:   list  = field(default_factory=list)
+    error:   str | None = None
 
 
 @dataclass
@@ -156,14 +156,14 @@ class Finding:
 class AuditResult:
     """Resultado completo de la auditoría de un JWT."""
     token:      str
-    components: Optional[JWTComponents] = None
-    findings:   List[Finding]           = field(default_factory=list)
-    cracked_secret: Optional[str]       = None
-    alg_none_token: Optional[str]       = None
-    rs256_hs256_token: Optional[str]    = None
+    components: JWTComponents | None = None
+    findings:   list[Finding]           = field(default_factory=list)
+    cracked_secret: str | None       = None
+    alg_none_token: str | None       = None
+    rs256_hs256_token: str | None    = None
     # Token RS256→HS256 generado con clave pública obtenida automáticamente del JWKS
-    jwks_rs256_hs256_token: Optional[str] = None
-    jwks_pubkey_pem: Optional[str]        = None
+    jwks_rs256_hs256_token: str | None = None
+    jwks_pubkey_pem: str | None        = None
 
     @property
     def max_severity(self) -> str:
@@ -194,7 +194,7 @@ def _b64url_encode(data: bytes) -> str:
 # OBTENCIÓN DE CLAVE PÚBLICA DESDE JWKS
 # =============================================================================
 
-def _jwk_rsa_to_pem(n_b64: str, e_b64: str) -> Optional[str]:
+def _jwk_rsa_to_pem(n_b64: str, e_b64: str) -> str | None:
     """
     Construye una clave pública RSA en formato PEM a partir de los componentes
     n y e de un JWK (base64url).
@@ -214,8 +214,8 @@ def _jwk_rsa_to_pem(n_b64: str, e_b64: str) -> Optional[str]:
     """
     # Intentar primero con cryptography (más fiable para claves grandes)
     try:
-        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
         from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
         from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
         def _decode_int(b64: str) -> int:
@@ -282,7 +282,7 @@ def _jwk_rsa_to_pem(n_b64: str, e_b64: str) -> Optional[str]:
         return None
 
 
-def fetch_jwks_public_key(issuer_or_url: str) -> Optional[str]:
+def fetch_jwks_public_key(issuer_or_url: str) -> str | None:
     """
     Obtiene la primera clave pública RSA del JWKS de un servidor OIDC/OAuth 2.0.
 
@@ -304,7 +304,7 @@ def fetch_jwks_public_key(issuer_or_url: str) -> Optional[str]:
     -------
     str  — Primera clave RSA pública en PEM, o None si no se pudo obtener
     """
-    def _fetch_json(url: str) -> Optional[dict]:
+    def _fetch_json(url: str) -> dict | None:
         """Descarga y parsea JSON con timeout de 5 segundos."""
         try:
             req = urllib.request.Request(
@@ -315,7 +315,7 @@ def fetch_jwks_public_key(issuer_or_url: str) -> Optional[str]:
         except Exception:
             return None
 
-    def _extract_rsa_pem(jwks: dict) -> Optional[str]:
+    def _extract_rsa_pem(jwks: dict) -> str | None:
         """Extrae la primera clave RSA (use=sig o sin use) del JWKS y la convierte a PEM."""
         for key in jwks.get("keys", []):
             if key.get("kty") == "RSA" and "n" in key and "e" in key:
@@ -410,7 +410,7 @@ def craft_alg_none_token(components: JWTComponents) -> str:
 # ATAQUE RS256 → HS256 (CONFUSIÓN DE ALGORITMO)
 # =============================================================================
 
-def craft_rs256_hs256_token(components: JWTComponents, pubkey_pem: str) -> Optional[str]:
+def craft_rs256_hs256_token(components: JWTComponents, pubkey_pem: str) -> str | None:
     """
     Genera un token HS256 firmado con la clave pública RSA como secreto HMAC.
 
@@ -444,8 +444,8 @@ def craft_rs256_hs256_token(components: JWTComponents, pubkey_pem: str) -> Optio
 
 def brute_force_secret(
     components: JWTComponents,
-    extra_wordlist: Optional[List[str]] = None,
-) -> Optional[str]:
+    extra_wordlist: list[str] | None = None,
+) -> str | None:
     """
     Intenta recuperar el secreto HMAC de un token HS256/HS384/HS512.
 
@@ -495,7 +495,7 @@ def brute_force_secret(
 # ANÁLISIS DE CLAIMS
 # =============================================================================
 
-def analyze_claims(components: JWTComponents) -> List[Finding]:
+def analyze_claims(components: JWTComponents) -> list[Finding]:
     """
     Analiza los claims del payload en busca de problemas de seguridad.
 
@@ -519,7 +519,7 @@ def analyze_claims(components: JWTComponents) -> List[Finding]:
     """
     now = int(time.time())
     p   = components.payload
-    findings: List[Finding] = []
+    findings: list[Finding] = []
 
     # ── Expiración ────────────────────────────────────────────────────────────
     exp = p.get("exp")
@@ -610,7 +610,7 @@ def analyze_claims(components: JWTComponents) -> List[Finding]:
     # ── Claims PII en el payload ──────────────────────────────────────────────
     PII_CLAIMS = {"email", "phone", "ssn", "tax_id", "dni", "nif", "address",
                   "date_of_birth", "dob", "credit_card", "ip_address"}
-    pii_found = [c for c in p.keys() if c.lower() in PII_CLAIMS]
+    pii_found = [c for c in p if c.lower() in PII_CLAIMS]
     if pii_found:
         findings.append(Finding(
             severity    = "MEDIUM",
@@ -645,7 +645,7 @@ def analyze_claims(components: JWTComponents) -> List[Finding]:
 # ANÁLISIS DE CABECERA
 # =============================================================================
 
-def analyze_header(components: JWTComponents) -> List[Finding]:
+def analyze_header(components: JWTComponents) -> list[Finding]:
     """
     Analiza la cabecera del JWT en busca de algoritmos inseguros y configuraciones débiles.
 
@@ -657,7 +657,7 @@ def analyze_header(components: JWTComponents) -> List[Finding]:
     -------
     List[Finding]  — Lista de hallazgos de cabecera
     """
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     alg = components.header.get("alg", "")
 
     if alg.lower() == "none":
@@ -730,8 +730,8 @@ def analyze_header(components: JWTComponents) -> List[Finding]:
 
 def detect_vulnerable_frameworks(
     components: JWTComponents,
-    check_url: Optional[str] = None,
-) -> List[Finding]:
+    check_url: str | None = None,
+) -> list[Finding]:
     """
     Detecta indicadores de frameworks con vulnerabilidades JWT conocidas.
 
@@ -760,12 +760,12 @@ def detect_vulnerable_frameworks(
     -------
     List[Finding]  — Hallazgos de detección de frameworks vulnerables
     """
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     iss = str(components.payload.get("iss", ""))
     iss_lower = iss.lower()
 
     # Recoger cabeceras de respuesta HTTP (si hay URL que sondear)
-    response_headers: Dict[str, str] = {}
+    response_headers: dict[str, str] = {}
     if check_url:
         try:
             req = urllib.request.Request(
@@ -829,7 +829,7 @@ def detect_vulnerable_frameworks(
             ),
             evidence    = (
                 f"iss={iss or 'N/A'}"
-                + (f"  X-Vault-Request: true" if vault_header == "true" else "")
+                + ("  X-Vault-Request: true" if vault_header == "true" else "")
                 + f"\nURL de prueba: {test_url}"
             ),
             remediation = (
@@ -847,7 +847,7 @@ def detect_vulnerable_frameworks(
 # ATAQUE KID INJECTION (PATH TRAVERSAL / SQL INJECTION)
 # =============================================================================
 
-def _test_kid_injection(header: Dict, findings: List[Finding]) -> None:
+def _test_kid_injection(header: dict, findings: list[Finding]) -> None:
     """
     Analiza el campo 'kid' del header JWT en busca de vectores de
     path traversal y SQL injection de forma pasiva.
@@ -926,7 +926,7 @@ def _test_kid_injection(header: Dict, findings: List[Finding]) -> None:
 # ATAQUE jku/x5u INJECTION (JWKS SPOOFING)
 # =============================================================================
 
-def _test_jku_injection(header: Dict, findings: List[Finding]) -> None:
+def _test_jku_injection(header: dict, findings: list[Finding]) -> None:
     """
     Analiza los campos de URL de clave en el header JWT: jku, x5u, x5c.
 
@@ -1031,7 +1031,7 @@ def _test_jku_injection(header: Dict, findings: List[Finding]) -> None:
 # ANÁLISIS DE FLUJO OAUTH 2.0
 # =============================================================================
 
-def analyze_oauth_url(url: str) -> List[Finding]:
+def analyze_oauth_url(url: str) -> list[Finding]:
     """
     Analiza una URL de autorización OAuth 2.0 en busca de problemas de seguridad.
 
@@ -1053,7 +1053,7 @@ def analyze_oauth_url(url: str) -> List[Finding]:
     -------
     List[Finding]  — Hallazgos encontrados en el URL
     """
-    hallazgos: List[Finding] = []
+    hallazgos: list[Finding] = []
 
     try:
         parsed = urllib.parse.urlparse(url)
@@ -1191,9 +1191,9 @@ def analyze_oauth_url(url: str) -> List[Finding]:
 
 def audit_token(
     token: str,
-    wordlist: Optional[List[str]] = None,
-    pubkey_pem: Optional[str] = None,
-    jwks_url: Optional[str] = None,
+    wordlist: list[str] | None = None,
+    pubkey_pem: str | None = None,
+    jwks_url: str | None = None,
 ) -> AuditResult:
     """
     Ejecuta la auditoría completa de un JWT.
@@ -1439,7 +1439,7 @@ def print_token_detail(result: AuditResult) -> None:
 
     # Token alg=none
     if result.alg_none_token:
-        console.print(f"\n  [dim]Token alg=none (para prueba manual):[/]")
+        console.print("\n  [dim]Token alg=none (para prueba manual):[/]")
         console.print(f"  [dim]{result.alg_none_token[:100]}...[/]" if len(result.alg_none_token) > 100 else f"  [dim]{result.alg_none_token}[/]")
 
     # Secreto cracked
@@ -1448,16 +1448,16 @@ def print_token_detail(result: AuditResult) -> None:
 
     # RS256→HS256 (clave pública manual con --pubkey)
     if result.rs256_hs256_token:
-        console.print(f"\n  [bold yellow]Token RS256→HS256 generado (probar en el servidor):[/]")
+        console.print("\n  [bold yellow]Token RS256→HS256 generado (probar en el servidor):[/]")
         console.print(f"  {result.rs256_hs256_token[:80]}...")
 
     # RS256→HS256 con clave pública obtenida del JWKS real
     if result.jwks_rs256_hs256_token:
-        console.print(f"\n  [bold red][JWT-CONF-010] Token RS256→HS256 con clave JWKS real (CRITICAL):[/]")
+        console.print("\n  [bold red][JWT-CONF-010] Token RS256→HS256 con clave JWKS real (CRITICAL):[/]")
         console.print(f"  {result.jwks_rs256_hs256_token[:80]}...")
 
 
-def to_json(results: List[AuditResult]) -> str:
+def to_json(results: list[AuditResult]) -> str:
     """Serializa los resultados de auditoría a JSON."""
     out = []
     for r in results:
@@ -1481,7 +1481,7 @@ def to_json(results: List[AuditResult]) -> str:
                        indent=2, ensure_ascii=False)
 
 
-def to_html(results: List[AuditResult]) -> str:
+def to_html(results: list[AuditResult]) -> str:
     """Genera un informe HTML con tema oscuro."""
     import datetime as _dt
 
@@ -1597,7 +1597,7 @@ def to_html(results: List[AuditResult]) -> str:
 # CONVERSOR A INFORME UNIFICADO VSL
 # =============================================================================
 
-def _findings_vsl(results: List[AuditResult]) -> list:
+def _findings_vsl(results: list[AuditResult]) -> list:
     """
     Convierte los AuditResult al formato Finding de vampsec_report.
 
@@ -1714,7 +1714,7 @@ def main() -> None:
     args = parse_args()
 
     # Cargar tokens
-    tokens: List[str] = []
+    tokens: list[str] = []
     if args.token:
         tokens = [args.token.strip()]
     elif args.file:
@@ -1763,7 +1763,7 @@ def main() -> None:
         sys.exit(1)
 
     # Cargar wordlist adicional
-    wordlist: Optional[List[str]] = None
+    wordlist: list[str] | None = None
     if args.wordlist and not args.no_bruteforce:
         wp = Path(args.wordlist)
         if not wp.exists():
@@ -1773,7 +1773,7 @@ def main() -> None:
             console.print(f"  [dim]Wordlist cargada: {len(wordlist)} secretos[/]")
 
     # Cargar clave pública (--pubkey)
-    pubkey_pem: Optional[str] = None
+    pubkey_pem: str | None = None
     if args.pubkey:
         pk_path = Path(args.pubkey)
         if not pk_path.exists():
@@ -1783,12 +1783,12 @@ def main() -> None:
             console.print(f"  [dim]Clave pública cargada: {args.pubkey}[/]")
 
     # URL del JWKS o issuer OIDC (--jwks-url)
-    jwks_url_arg: Optional[str] = getattr(args, "jwks_url", None)
+    jwks_url_arg: str | None = getattr(args, "jwks_url", None)
     if jwks_url_arg:
         console.print(f"  [dim]JWKS URL: {jwks_url_arg}[/]")
 
     # Auditar cada token
-    results: List[AuditResult] = []
+    results: list[AuditResult] = []
     for i, token in enumerate(tokens, 1):
         if len(tokens) > 1:
             console.print(f"\n[bold cyan]  ── Token {i}/{len(tokens)} ──[/]")

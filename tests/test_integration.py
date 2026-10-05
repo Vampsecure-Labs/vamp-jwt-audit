@@ -6,17 +6,14 @@ Verifica el flujo completo de audit_token con tokens construidos manualmente,
 sin necesidad de servidor externo ni PyJWT.
 """
 
-import pytest
-import base64
-import json
 import time
 
-import vamp_jwt_audit as jwt_mod
 from vamp_jwt_audit import (
-    audit_token, decode_jwt, analyze_claims, analyze_oauth_url,
+    analyze_oauth_url,
+    audit_token,
 )
-from .conftest import crear_jwt_alg_none, crear_jwt_hs256, crear_jwt_rs256_header
 
+from .conftest import crear_jwt_alg_none, crear_jwt_hs256
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 1: JWT con alg:none → CRITICAL en audit_token

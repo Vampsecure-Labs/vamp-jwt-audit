@@ -6,19 +6,20 @@ Cubre: decode_jwt, craft_alg_none_token, craft_rs256_hs256_token,
 analyze_header, analyze_claims, brute_force_secret, analyze_oauth_url.
 """
 
-import pytest
-import base64
 import json
 import time
 
-import vamp_jwt_audit as jwt_mod
 from vamp_jwt_audit import (
-    decode_jwt, craft_alg_none_token, craft_rs256_hs256_token,
-    brute_force_secret, analyze_claims, analyze_header,
-    analyze_oauth_url, JWTComponents, Finding, _b64url_encode,
+    _b64url_encode,
+    analyze_claims,
+    analyze_header,
+    analyze_oauth_url,
+    brute_force_secret,
+    craft_alg_none_token,
+    decode_jwt,
 )
-from .conftest import crear_jwt_alg_none, crear_jwt_hs256, crear_jwt_rs256_header
 
+from .conftest import crear_jwt_hs256
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests de decode_jwt
@@ -48,7 +49,7 @@ class TestDecodeJWT:
 
     def test_decode_jwt_malformado_error(self):
         """Un token con menos de 2 partes debe devolver error."""
-        componentes = decode_jwt("esto.no.es.valido.ni.remotamente")
+        decode_jwt("esto.no.es.valido.ni.remotamente")
         # Con más de 3 partes podría fallar al intentar parsear el JSON
         componentes2 = decode_jwt("solounasola")
         assert componentes2.error is not None

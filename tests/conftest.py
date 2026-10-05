@@ -3,17 +3,15 @@
 conftest.py — Fixtures compartidos para los tests de vamp-jwt-audit
 """
 
-import os
-import sys
 import base64
 import json
+import os
+import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-import vamp_jwt_audit as jwt_mod
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Utilidades para construir JWTs de prueba sin PyJWT
@@ -33,8 +31,8 @@ def crear_jwt_alg_none(payload: dict) -> str:
 
 def crear_jwt_hs256(payload: dict, secret: str = "secret") -> str:
     """Crea JWT HS256 firmado con el secreto dado para tests."""
-    import hmac
     import hashlib
+    import hmac
     header = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     body = b64url(json.dumps(payload).encode())
     mensaje = f"{header}.{body}".encode()
