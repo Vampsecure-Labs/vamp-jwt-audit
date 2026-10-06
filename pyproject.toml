@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vamp-jwt-audit"
-version = "1.3.0"
-description = "JWT security auditor — alg=none, RS256-to-HS256 confusion, HMAC brute force, kid/jku injection"
+version = "1.4.0"
+description = "JWT security auditor — alg=none, RS256-to-HS256 confusion, HMAC brute force, kid/jku injection · librería importable"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.8"
@@ -34,4 +34,5 @@ Homepage = "https://github.com/Vampsecure-Labs/vamp-jwt-audit"
 Repository = "https://github.com/Vampsecure-Labs/vamp-jwt-audit"
 
 [tool.setuptools]
-py-modules = ["vamp_jwt_audit", "vampsec_report"]
+packages = ["vamp_jwt_audit"]
+py-modules = ["vampsec_report"]

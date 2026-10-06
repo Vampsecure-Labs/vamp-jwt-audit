@@ -1,179 +1,23 @@
-"""
-vamp_jwt_audit.py — Auditor de Tokens JWT
-==========================================
-© VampSecure Studios — VampSecure Labs Security Research Division
-
-Herramienta de análisis y auditoría de seguridad de JSON Web Tokens (JWT).
-
-Ataques y vectores analizados
-------------------------------
-1. Decodificación sin verificación
-   Lee la cabecera (header) y el payload sin necesitar el secreto ni la clave
-   pública. Extrae todos los claims y muestra metadatos del token.
-
-2. Ataque alg=none
-   Un servidor vulnerable acepta un token cuya cabecera incluye "alg": "none"
-   y cuya firma está vacía. La herramienta comprueba si la cabecera del token
-   ya declara alg=none e indica cómo construir el token manipulado.
-
-3. Ataque de confusión de algoritmo RS256 → HS256
-   Si un servidor verifica con la clave pública RSA y el cliente puede enviar
-   un token firmado con HMAC-SHA256 usando esa clave pública como secreto, el
-   servidor lo aceptará pensando que es una firma HMAC válida.
-   Si se proporciona --pubkey, la herramienta genera el token manipulado.
-
-4. Fuerza bruta de secreto HMAC (HS256 / HS384 / HS512)
-   Prueba secretos de una lista integrada de 200+ secretos comunes y de un
-   fichero externo (--wordlist). Si encuentra el secreto, lo reporta como
-   CRÍTICO.
-
-5. Análisis de claims
-   Valida: expiración (exp), nbf, iat, algoritmo inseguro, iss/aud vacíos,
-   roles/scope de alto privilegio, claims PII innecesarios (email, SSN…).
-
-Uso básico
-----------
-  python3 vamp_jwt_audit.py --token <JWT>
-  python3 vamp_jwt_audit.py --token <JWT> --wordlist secretos.txt
-  python3 vamp_jwt_audit.py --token <JWT> --pubkey pub.pem
-  python3 vamp_jwt_audit.py --file tokens.txt --json resultado.json
-
-Dependencias
-------------
-  pip install rich>=13.7.0
-
-Dependencias opcionales (cryptography) para RS256→HS256 con --pubkey:
-  pip install cryptography>=41.0
-"""
-
-# =============================================================================
-# METADATOS Y AUTORÍA
-# =============================================================================
 # © VampSecure Studios — VampSecure Labs Security Research Division
-# Todos los derechos reservados. Uso exclusivo en auditorías autorizadas.
-# =============================================================================
+"""
+_core.py — Lógica pura de auditoría JWT (sin I/O, sin rich, sin argparse)
+"""
 
 from __future__ import annotations
 
-import argparse
 import base64
 import hashlib
 import hmac
 import json
-import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
-from pathlib import Path
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
-VERSION   = "1.3.0"
-TOOL_NAME = "vamp-jwt-audit"
-
-console = Console()
-
-BANNER = r"""
-__   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
-\ \ / /_\ |  \/  | _ \/ __| __/ __| | | | _ \ __| |    /_\ | _ ) __|
- \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
-  \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
-  by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-jwt-audit v1.3.0 · JWT Security Auditor
-  ────────────────────────────────────────────────────────────────────────
-  USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
-"""
+from ._models import VERSION, TOOL_NAME, _COMMON_SECRETS, JWTComponents, Finding, AuditResult
 
 # =============================================================================
-# SECRETOS COMUNES PARA FUERZA BRUTA
-# =============================================================================
-# Lista integrada de secretos JWT débiles utilizados frecuentemente en
-# aplicaciones de ejemplo, tutoriales y configuraciones por defecto.
-
-_COMMON_SECRETS = [
-    "secret", "secret123", "password", "password123", "12345", "123456",
-    "qwerty", "test", "test123", "dev", "development", "prod", "production",
-    "jwt_secret", "jwt-secret", "jwtsecret", "jwt_key", "mySecret",
-    "mysecret", "my_secret", "MySecret", "changeme", "change_me",
-    "token", "tokenSecret", "token_secret", "appSecret", "app_secret",
-    "api_secret", "apiSecret", "auth", "auth_secret", "authSecret",
-    "supersecret", "super_secret", "verysecret", "very_secret",
-    "s3cr3t", "p@ssw0rd", "P@ssw0rd", "Pa$$w0rd", "abc123",
-    "admin", "admin123", "root", "root123", "toor", "letmein",
-    "welcome", "monkey", "dragon", "master", "login", "pass",
-    "trustno1", "football", "shadow", "sunshine", "princess",
-    "hello", "charlie", "donald", "batman", "superman", "access",
-    "passw0rd", "password1", "password!",
-    # Secretos de ejemplo de frameworks y tutoriales
-    "your-256-bit-secret", "your-secret-key", "your_jwt_secret",
-    "YOUR_SECRET_KEY", "MY_SECRET", "JWT_SECRET", "JWT_KEY",
-    "CHANGE_THIS", "REPLACE_ME", "PLACEHOLDER",
-    "HS256_SECRET", "HS512_SECRET",
-    "shhhhh", "keyboard cat", "keyboardcat",
-    # Secretos de Docker/Kubernetes/CI defaults
-    "k8s-secret", "kubernetes-secret", "docker-secret",
-    "ci_secret", "CI_SECRET", "GITHUB_SECRET",
-    # Vacío
-    "", " ",
-    # Base64 commons
-    "c2VjcmV0", "dGVzdA==", "cGFzc3dvcmQ=",
-]
-
-# =============================================================================
-# ESTRUCTURAS DE DATOS
-# =============================================================================
-
-@dataclass
-class JWTComponents:
-    """Componentes decodificados de un JWT."""
-    raw:     str
-    header:  dict  = field(default_factory=dict)
-    payload: dict  = field(default_factory=dict)
-    sig_b64: str   = ""
-    parts:   list  = field(default_factory=list)
-    error:   str | None = None
-
-
-@dataclass
-class Finding:
-    """Hallazgo de seguridad en el token."""
-    severity:    str        # CRITICAL / HIGH / MEDIUM / LOW / INFO
-    title:       str
-    description: str
-    evidence:    str = ""
-    remediation: str = ""
-
-    @property
-    def order(self) -> int:
-        return {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}.get(self.severity, 99)
-
-
-@dataclass
-class AuditResult:
-    """Resultado completo de la auditoría de un JWT."""
-    token:      str
-    components: JWTComponents | None = None
-    findings:   list[Finding]           = field(default_factory=list)
-    cracked_secret: str | None       = None
-    alg_none_token: str | None       = None
-    rs256_hs256_token: str | None    = None
-    # Token RS256→HS256 generado con clave pública obtenida automáticamente del JWKS
-    jwks_rs256_hs256_token: str | None = None
-    jwks_pubkey_pem: str | None        = None
-
-    @property
-    def max_severity(self) -> str:
-        if not self.findings:
-            return "INFO"
-        return self.findings[0].severity
-
-
-# =============================================================================
-# DECODIFICACIÓN JWT
+# UTILIDADES BASE64URL
 # =============================================================================
 
 def _b64url_decode(s: str) -> bytes:
@@ -202,17 +46,7 @@ def _jwk_rsa_to_pem(n_b64: str, e_b64: str) -> str | None:
     Intenta primero con la biblioteca `cryptography` si está disponible;
     si no, construye el SubjectPublicKeyInfo (DER → PEM) manualmente sin
     dependencias externas.
-
-    Parámetros
-    ----------
-    n_b64 : str  — Módulo RSA en base64url (campo n del JWK)
-    e_b64 : str  — Exponente público en base64url (campo e del JWK)
-
-    Retorna
-    -------
-    str  — Clave pública RSA en PEM, o None si la construcción falla
     """
-    # Intentar primero con cryptography (más fiable para claves grandes)
     try:
         from cryptography.hazmat.backends import default_backend
         from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
@@ -227,21 +61,17 @@ def _jwk_rsa_to_pem(n_b64: str, e_b64: str) -> str | None:
         ).public_key(default_backend())
         return pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
     except ImportError:
-        pass  # cryptography no instalada; continuar con construcción manual
+        pass
     except Exception:
         return None
 
-    # Construcción manual de SubjectPublicKeyInfo (DER → PEM) sin dependencias externas.
-    # Formato: SEQUENCE { AlgorithmIdentifier, BIT STRING { SEQUENCE { INTEGER n, INTEGER e } } }
     try:
         def _b64url_raw(s: str) -> bytes:
-            """Decodifica base64url a bytes sin añadir padding innecesario."""
             s = s.replace("-", "+").replace("_", "/")
             s += "=" * ((-len(s)) % 4)
             return base64.b64decode(s)
 
         def _asn1_tlv(tag: int, value: bytes) -> bytes:
-            """Codifica un elemento TLV ASN.1 con longitud DER correcta."""
             ln = len(value)
             if ln < 128:
                 length = bytes([ln])
@@ -252,28 +82,20 @@ def _jwk_rsa_to_pem(n_b64: str, e_b64: str) -> str | None:
             return bytes([tag]) + length + value
 
         def _asn1_int(raw: bytes) -> bytes:
-            """Codifica un INTEGER ASN.1 desde bytes big-endian sin signo."""
             raw = raw.lstrip(b"\x00") or b"\x00"
-            if raw[0] & 0x80:  # bit de signo activo → añadir byte 0x00
+            if raw[0] & 0x80:
                 raw = b"\x00" + raw
             return _asn1_tlv(0x02, raw)
 
         n_bytes = _b64url_raw(n_b64)
         e_bytes = _b64url_raw(e_b64)
 
-        # SEQUENCE { INTEGER n, INTEGER e } — cuerpo de la clave RSA
         key_seq = _asn1_tlv(0x30, _asn1_int(n_bytes) + _asn1_int(e_bytes))
-
-        # BIT STRING: prefijo 0x00 (cero bits ignorados) + secuencia de clave
         bit_string = _asn1_tlv(0x03, b"\x00" + key_seq)
-
-        # AlgorithmIdentifier: SEQUENCE { OID rsaEncryption (1.2.840.113549.1.1.1), NULL }
         alg_id = _asn1_tlv(0x30,
-            b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01"  # OID 1.2.840.113549.1.1.1
-            b"\x05\x00"                                          # NULL
+            b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01"
+            b"\x05\x00"
         )
-
-        # SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
         spki = _asn1_tlv(0x30, alg_id + bit_string)
 
         pem_b64 = base64.b64encode(spki).decode()
@@ -291,21 +113,8 @@ def fetch_jwks_public_key(issuer_or_url: str) -> str | None:
     1. Si la URL ya termina en .json, se usa directamente como JWKS.
     2. Intenta {issuer}/.well-known/jwks.json
     3. Intenta {issuer}/.well-known/openid-configuration → extrae jwks_uri → descarga JWKS
-
-    La clave RSA se convierte a PEM mediante `_jwk_rsa_to_pem`.
-    Si la biblioteca `cryptography` no está disponible se usa la construcción
-    manual en puro Python; en ese caso el PEM es igualmente válido para HMAC.
-
-    Parámetros
-    ----------
-    issuer_or_url : str  — URL base del emisor o URL directa del endpoint JWKS
-
-    Retorna
-    -------
-    str  — Primera clave RSA pública en PEM, o None si no se pudo obtener
     """
     def _fetch_json(url: str) -> dict | None:
-        """Descarga y parsea JSON con timeout de 5 segundos."""
         try:
             req = urllib.request.Request(
                 url, headers={"User-Agent": f"vamp-jwt-audit/{VERSION}"}
@@ -316,31 +125,26 @@ def fetch_jwks_public_key(issuer_or_url: str) -> str | None:
             return None
 
     def _extract_rsa_pem(jwks: dict) -> str | None:
-        """Extrae la primera clave RSA (use=sig o sin use) del JWKS y la convierte a PEM."""
         for key in jwks.get("keys", []):
             if key.get("kty") == "RSA" and "n" in key and "e" in key:
-                # Preferir claves de firma explícitas
                 if key.get("use", "sig") == "sig":
                     return _jwk_rsa_to_pem(key["n"], key["e"])
         return None
 
     base = issuer_or_url.rstrip("/")
 
-    # Caso 1: URL directa al JWKS (ya termina en .json)
     if base.endswith(".json"):
         data = _fetch_json(base)
         if data and "keys" in data:
             return _extract_rsa_pem(data)
         return None
 
-    # Caso 2: {issuer}/.well-known/jwks.json
     data = _fetch_json(f"{base}/.well-known/jwks.json")
     if data and "keys" in data:
         pem = _extract_rsa_pem(data)
         if pem:
             return pem
 
-    # Caso 3: descubrimiento OIDC → jwks_uri
     oidc = _fetch_json(f"{base}/.well-known/openid-configuration")
     if oidc and "jwks_uri" in oidc:
         jwks_data = _fetch_json(oidc["jwks_uri"])
@@ -350,20 +154,14 @@ def fetch_jwks_public_key(issuer_or_url: str) -> str | None:
     return None
 
 
+# =============================================================================
+# DECODIFICACIÓN JWT
+# =============================================================================
+
 def decode_jwt(token: str) -> JWTComponents:
     """
     Decodifica un JWT en sus tres componentes sin verificar la firma.
-
     Acepta tokens con o sin el prefijo 'Bearer '.
-
-    Parámetros
-    ----------
-    token : str  — El token JWT en formato xxx.yyy.zzz
-
-    Retorna
-    -------
-    JWTComponents con header, payload y firma decodificados o con error si
-    el formato es inválido.
     """
     token = token.strip()
     if token.lower().startswith("bearer "):
@@ -387,19 +185,7 @@ def decode_jwt(token: str) -> JWTComponents:
 # =============================================================================
 
 def craft_alg_none_token(components: JWTComponents) -> str:
-    """
-    Construye un token manipulado con alg=none y firma vacía.
-
-    El servidor sólo acepta este token si no valida correctamente el algoritmo.
-
-    Parámetros
-    ----------
-    components : JWTComponents  — Token decodificado original
-
-    Retorna
-    -------
-    str  — El token manipulado con alg=none
-    """
+    """Construye un token manipulado con alg=none y firma vacía."""
     new_header  = {**components.header, "alg": "none"}
     header_enc  = _b64url_encode(json.dumps(new_header, separators=(",", ":")).encode())
     payload_enc = _b64url_encode(json.dumps(components.payload, separators=(",", ":")).encode())
@@ -411,24 +197,7 @@ def craft_alg_none_token(components: JWTComponents) -> str:
 # =============================================================================
 
 def craft_rs256_hs256_token(components: JWTComponents, pubkey_pem: str) -> str | None:
-    """
-    Genera un token HS256 firmado con la clave pública RSA como secreto HMAC.
-
-    Ataque de confusión de algoritmo: el servidor verifica JWT con una clave
-    pública RSA (RS256); si acepta también HS256, un atacante puede firmar con
-    la clave pública (conocida) como si fuera un secreto HMAC.
-
-    Requiere la dependencia opcional `cryptography`.
-
-    Parámetros
-    ----------
-    components  : JWTComponents  — Token original decodificado
-    pubkey_pem  : str            — Clave pública RSA en formato PEM
-
-    Retorna
-    -------
-    str  — Token manipulado firmado con HS256+pubkey, o None si falla
-    """
+    """Genera un token HS256 firmado con la clave pública RSA como secreto HMAC."""
     new_header  = {**components.header, "alg": "HS256"}
     header_enc  = _b64url_encode(json.dumps(new_header, separators=(",", ":")).encode())
     payload_enc = _b64url_encode(json.dumps(components.payload, separators=(",", ":")).encode())
@@ -448,19 +217,7 @@ def brute_force_secret(
 ) -> str | None:
     """
     Intenta recuperar el secreto HMAC de un token HS256/HS384/HS512.
-
-    Prueba primero la lista integrada de secretos comunes y luego los
-    del fichero externo (si se proporciona). Para cada candidato calcula
-    la firma HMAC con el algoritmo del token y la compara con la firma real.
-
-    Parámetros
-    ----------
-    components    : JWTComponents  — Token decodificado
-    extra_wordlist: List[str]      — Secretos adicionales de un fichero externo
-
-    Retorna
-    -------
-    str  — El secreto encontrado, o None si no se ha encontrado
+    Prueba la lista integrada de secretos comunes y la wordlist externa.
     """
     alg = components.header.get("alg", "").upper()
     if alg not in ("HS256", "HS384", "HS512"):
@@ -499,29 +256,13 @@ def analyze_claims(components: JWTComponents) -> list[Finding]:
     """
     Analiza los claims del payload en busca de problemas de seguridad.
 
-    Checks implementados
-    --------------------
-    · Expiración: exp ausente, ya expirado, vigencia excesiva (> 24h)
-    · nbf en el futuro (token no válido aún)
-    · iat ausente o en el futuro
-    · iss / aud vacíos o ausentes
-    · Roles/scope de alto privilegio (admin, root, superuser…)
-    · Claims PII innecesarios (email, SSN, teléfono en el payload)
-    · kid con path traversal o inyección SQL
-
-    Parámetros
-    ----------
-    components : JWTComponents  — Token decodificado
-
-    Retorna
-    -------
-    List[Finding]  — Lista de hallazgos de claims
+    Checks: exp ausente/expirado/largo, nbf futuro, iss/aud ausentes,
+    roles privilegiados, claims PII, kid con path traversal/SQLi.
     """
     now = int(time.time())
     p   = components.payload
     findings: list[Finding] = []
 
-    # ── Expiración ────────────────────────────────────────────────────────────
     exp = p.get("exp")
     if exp is None:
         findings.append(Finding(
@@ -556,7 +297,6 @@ def analyze_claims(components: JWTComponents) -> list[Finding]:
                               "1h para API keys, 24h máximo para tokens de refresh.",
             ))
 
-    # ── nbf ───────────────────────────────────────────────────────────────────
     nbf = p.get("nbf")
     if nbf and isinstance(nbf, (int, float)) and int(nbf) > now + 60:
         findings.append(Finding(
@@ -569,7 +309,6 @@ def analyze_claims(components: JWTComponents) -> list[Finding]:
                           "Verificar que la lógica de validación comprueba: now >= nbf.",
         ))
 
-    # ── iss / aud ─────────────────────────────────────────────────────────────
     if not p.get("iss"):
         findings.append(Finding(
             severity    = "LOW",
@@ -587,7 +326,6 @@ def analyze_claims(components: JWTComponents) -> list[Finding]:
             remediation = "Añadir el claim 'aud' con el identificador del servicio receptor y validarlo.",
         ))
 
-    # ── Roles / scope de alto privilegio ─────────────────────────────────────
     PRIVILEGED_ROLES = {"admin", "root", "superuser", "super_user", "superadmin",
                         "administrator", "owner", "god", "system", "internal"}
     for claim in ("role", "roles", "scope", "permissions", "groups", "authorities"):
@@ -607,7 +345,6 @@ def analyze_claims(components: JWTComponents) -> list[Finding]:
                               "nunca confiar exclusivamente en los claims del token.",
             ))
 
-    # ── Claims PII en el payload ──────────────────────────────────────────────
     PII_CLAIMS = {"email", "phone", "ssn", "tax_id", "dni", "nif", "address",
                   "date_of_birth", "dob", "credit_card", "ip_address"}
     pii_found = [c for c in p if c.lower() in PII_CLAIMS]
@@ -624,7 +361,6 @@ def analyze_claims(components: JWTComponents) -> list[Finding]:
                           "Si es necesario incluir PII, usar JWE (JSON Web Encryption) en lugar de JWT.",
         ))
 
-    # ── kid con path traversal / inyección ────────────────────────────────────
     kid = components.header.get("kid", "")
     if kid and any(c in str(kid) for c in ("../", "..\\", ";", "' OR", "/*", "UNION")):
         findings.append(Finding(
@@ -646,17 +382,7 @@ def analyze_claims(components: JWTComponents) -> list[Finding]:
 # =============================================================================
 
 def analyze_header(components: JWTComponents) -> list[Finding]:
-    """
-    Analiza la cabecera del JWT en busca de algoritmos inseguros y configuraciones débiles.
-
-    Parámetros
-    ----------
-    components : JWTComponents  — Token decodificado
-
-    Retorna
-    -------
-    List[Finding]  — Lista de hallazgos de cabecera
-    """
+    """Analiza la cabecera del JWT en busca de algoritmos inseguros y configuraciones débiles."""
     findings: list[Finding] = []
     alg = components.header.get("alg", "")
 
@@ -671,7 +397,6 @@ def analyze_header(components: JWTComponents) -> list[Finding]:
             remediation = "El servidor debe rechazar EXPLÍCITAMENTE tokens con alg=none. "
                           "Usar una lista blanca de algoritmos aceptables (p. ej. solo HS256 o RS256).",
         ))
-
     elif alg.upper() in ("HS256", "HS384", "HS512"):
         findings.append(Finding(
             severity    = "INFO",
@@ -681,7 +406,6 @@ def analyze_header(components: JWTComponents) -> list[Finding]:
             remediation = f"Usar un secreto aleatorio de al menos 256 bits (32 bytes) para {alg}. "
                           "Para mayor seguridad asimétrica, considerar RS256/ES256 con claves de 2048/256 bits.",
         ))
-
     elif alg.upper() in ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"):
         findings.append(Finding(
             severity    = "INFO",
@@ -692,7 +416,6 @@ def analyze_header(components: JWTComponents) -> list[Finding]:
                           "cualquier token cuyo 'alg' difiera del esperado.",
         ))
 
-    # jku / x5u — key injection via URL
     for claim in ("jku", "x5u"):
         val = components.header.get(claim)
         if val:
@@ -707,7 +430,6 @@ def analyze_header(components: JWTComponents) -> list[Finding]:
                               "Fijar la URL/clave en la configuración interna del servidor.",
             ))
 
-    # jwk inline
     if "jwk" in components.header:
         findings.append(Finding(
             severity    = "CRITICAL",
@@ -734,37 +456,12 @@ def detect_vulnerable_frameworks(
 ) -> list[Finding]:
     """
     Detecta indicadores de frameworks con vulnerabilidades JWT conocidas.
-
-    CVEs cubiertos
-    --------------
-    · CVE-2026-22817 — Hono < 4.11.4: confusión de algoritmo JWT. La verificación
-      del token acepta HS256 firmado con la clave pública RSA como secreto HMAC.
-    · CVE-2026-33757 — OpenBao / HashiCorp Vault: bypass del flujo OIDC mediante
-      callback_mode=direct sin confirmación de consentimiento (login CSRF).
-
-    Estrategia de detección
-    -----------------------
-    · Hono  → cabecera de respuesta X-Powered-By que contenga "Hono"
-    · OpenBao/Vault → claim `iss` contiene "vault", "openbao" o "/auth/" (patrones
-      típicos de Vault) y/o cabecera X-Vault-Request: true en la respuesta HTTP
-
-    Si se proporciona check_url, se realiza una petición GET para leer cabeceras
-    de respuesta; si no, la detección es puramente estática sobre los claims.
-
-    Parámetros
-    ----------
-    components : JWTComponents  — Token decodificado
-    check_url  : str            — URL a sondear (issuer o JWKS URL); opcional
-
-    Retorna
-    -------
-    List[Finding]  — Hallazgos de detección de frameworks vulnerables
+    CVE-2026-22817 (Hono) y CVE-2026-33757 (OpenBao/Vault).
     """
     findings: list[Finding] = []
     iss = str(components.payload.get("iss", ""))
     iss_lower = iss.lower()
 
-    # Recoger cabeceras de respuesta HTTP (si hay URL que sondear)
     response_headers: dict[str, str] = {}
     if check_url:
         try:
@@ -775,7 +472,7 @@ def detect_vulnerable_frameworks(
             with urllib.request.urlopen(req, timeout=5) as resp:
                 response_headers = {k.lower(): v for k, v in resp.headers.items()}
         except Exception:
-            pass  # Sin acceso al endpoint; continuar con detección estática
+            pass
 
     powered_by    = response_headers.get("x-powered-by", "").lower()
     vault_header  = response_headers.get("x-vault-request", "").lower()
@@ -786,7 +483,6 @@ def detect_vulnerable_frameworks(
         or any(s in iss_lower for s in ("vault", "openbao", "/auth/"))
     )
 
-    # ── Finding JWT-FRAME-001: Hono potencialmente vulnerable ────────────────
     if hono_detected:
         findings.append(Finding(
             severity    = "HIGH",
@@ -809,9 +505,7 @@ def detect_vulnerable_frameworks(
             ),
         ))
 
-    # ── Finding JWT-OPENBAO-001: OpenBao/Vault — callback_mode=direct ────────
     if openbao_detected:
-        # Construir URL de prueba para el bypass CVE-2026-33757
         _base = (check_url or iss).rstrip("/")
         test_url = f"{_base}/v1/auth/oidc/oidc/callback?code=TEST&state=TEST&callback_mode=direct"
 
@@ -848,34 +542,13 @@ def detect_vulnerable_frameworks(
 # =============================================================================
 
 def _test_kid_injection(header: dict, findings: list[Finding]) -> None:
-    """
-    Analiza el campo 'kid' del header JWT en busca de vectores de
-    path traversal y SQL injection de forma pasiva.
-
-    El análisis es puramente estático sobre el header decodificado;
-    no realiza peticiones de red.
-
-    Vectores documentados para prueba manual
-    -----------------------------------------
-    · kid = "../../dev/null" → path traversal; si el servidor carga la clave
-      desde disco y /dev/null devuelve un fichero vacío, la firma HMAC
-      resultante es predecible (HMAC con clave vacía).
-    · kid = "' OR '1'='1" → SQL injection en el verificador de kid
-      si el servidor construye una consulta del tipo:
-      SELECT clave FROM claves WHERE id='<kid>'
-
-    Parámetros
-    ----------
-    header   : Dict          — Cabecera decodificada del JWT
-    findings : List[Finding] — Lista de hallazgos (se modifica in-place)
-    """
+    """Analiza el campo 'kid' del header JWT en busca de path traversal y SQL injection."""
     kid = header.get("kid")
     if kid is None:
         return
 
     kid_str = str(kid)
 
-    # Comprobar si el kid es numérico puro — posible SQL injection indirecta
     if kid_str.strip().isdigit():
         findings.append(Finding(
             severity    = "INFO",
@@ -898,7 +571,6 @@ def _test_kid_injection(header: dict, findings: list[Finding]) -> None:
         ))
         return
 
-    # Comprobar caracteres sospechosos de path traversal o SQL injection
     CHARS_SOSPECHOSOS = ("../", "..\\", "'", '"', ";")
     encontrados = [c for c in CHARS_SOSPECHOSOS if c in kid_str]
     if encontrados:
@@ -927,34 +599,7 @@ def _test_kid_injection(header: dict, findings: list[Finding]) -> None:
 # =============================================================================
 
 def _test_jku_injection(header: dict, findings: list[Finding]) -> None:
-    """
-    Analiza los campos de URL de clave en el header JWT: jku, x5u, x5c.
-
-    El análisis es puramente estático sobre el header decodificado;
-    no realiza peticiones de red ni descarga ninguna URL.
-
-    Vectores analizados
-    -------------------
-    · jku (JWK Set URL): El servidor puede descargar la clave pública
-      desde esta URL. Un atacante puede apuntar a un servidor controlado
-      por él con una clave pública arbitraria → JWKS spoofing.
-      → HIGH "Header jku presente — posible JWKS spoofing"
-
-    · x5u (X.509 URL): Similar a jku pero para certificados X.509.
-      Permite a un atacante proveer su propio certificado como clave.
-      → HIGH "Header x5u presente — posible X.509 spoofing"
-
-    · x5c (X.509 certificate chain): Certificado incrustado en el token.
-      Si el servidor confía en la clave del x5c sin verificarla contra
-      una CA de confianza, el atacante puede auto-firmarlo.
-      → MEDIUM "Header x5c presente — verificar que la clave no es autocontrolada"
-
-    Parámetros
-    ----------
-    header   : Dict          — Cabecera decodificada del JWT
-    findings : List[Finding] — Lista de hallazgos (se modifica in-place)
-    """
-    # Comprobar jku — URL del conjunto de claves JWK
+    """Analiza los campos de URL de clave en el header JWT: jku, x5u, x5c."""
     jku = header.get("jku")
     if jku:
         findings.append(Finding(
@@ -977,7 +622,6 @@ def _test_jku_injection(header: dict, findings: list[Finding]) -> None:
             ),
         ))
 
-    # Comprobar x5u — URL de certificado X.509
     x5u = header.get("x5u")
     if x5u:
         findings.append(Finding(
@@ -998,7 +642,6 @@ def _test_jku_injection(header: dict, findings: list[Finding]) -> None:
             ),
         ))
 
-    # Comprobar x5c — Certificado X.509 embebido en el header
     x5c = header.get("x5c")
     if x5c:
         num_certs = len(x5c) if isinstance(x5c, list) else 1
@@ -1024,34 +667,16 @@ def _test_jku_injection(header: dict, findings: list[Finding]) -> None:
 
 
 # =============================================================================
-# MOTOR PRINCIPAL DE AUDITORÍA
-# =============================================================================
-
-# =============================================================================
 # ANÁLISIS DE FLUJO OAUTH 2.0
 # =============================================================================
 
 def analyze_oauth_url(url: str) -> list[Finding]:
     """
     Analiza una URL de autorización OAuth 2.0 en busca de problemas de seguridad.
-
     No realiza ninguna petición de red: solo parsea el URL con urllib.parse.
 
-    Checks implementados
-    --------------------
-    · state ausente          → CRITICAL (CSRF en código de autorización)
-    · code_challenge ausente → HIGH (sin PKCE, interceptación del código)
-    · response_type=token    → HIGH (flujo implícito obsoleto, token en URL)
-    · redirect_uri ausente   → MEDIUM (destino de redirección no verificable)
-    · scope permisivo        → INFO (scopes peligrosos como 'admin' o '*')
-
-    Parámetros
-    ----------
-    url : str  — URL de autorización OAuth 2.0 (p. ej. de un botón "Iniciar sesión")
-
-    Retorna
-    -------
-    List[Finding]  — Hallazgos encontrados en el URL
+    Checks: state (CSRF), code_challenge (PKCE), response_type=token (flujo implícito),
+    redirect_uri ausente, scope permisivo.
     """
     hallazgos: list[Finding] = []
 
@@ -1067,9 +692,6 @@ def analyze_oauth_url(url: str) -> list[Finding]:
         ))
         return hallazgos
 
-    # ── Parámetro 'state' ─────────────────────────────────────────────────────
-    # Su ausencia permite ataques CSRF: el atacante puede redirigir al usuario
-    # a completar el flujo OAuth con el código del atacante (account takeover).
     if "state" not in params:
         hallazgos.append(Finding(
             severity    = "CRITICAL",
@@ -1104,9 +726,6 @@ def analyze_oauth_url(url: str) -> list[Finding]:
                 remediation = "Usar un valor 'state' de al menos 32 bytes aleatorios (secrets.token_urlsafe(32)).",
             ))
 
-    # ── PKCE (code_challenge) ─────────────────────────────────────────────────
-    # Su ausencia permite a un atacante interceptar el código de autorización
-    # (p. ej. en apps nativas via custom URL schemes) y canjearlo por tokens.
     response_type = params.get("response_type", [""])[0].lower()
     if response_type == "code" and "code_challenge" not in params:
         hallazgos.append(Finding(
@@ -1128,10 +747,6 @@ def analyze_oauth_url(url: str) -> list[Finding]:
             ),
         ))
 
-    # ── Flujo implícito (response_type=token) ─────────────────────────────────
-    # El flujo implícito devuelve el access_token directamente en el fragment de la URL
-    # de redirección, exponiéndolo en el historial del navegador, logs de servidor
-    # y pudiendo ser robado via XSS o Referer header.
     if response_type == "token":
         hallazgos.append(Finding(
             severity    = "HIGH",
@@ -1155,7 +770,6 @@ def analyze_oauth_url(url: str) -> list[Finding]:
             ),
         ))
 
-    # ── redirect_uri ──────────────────────────────────────────────────────────
     if "redirect_uri" not in params:
         hallazgos.append(Finding(
             severity    = "MEDIUM",
@@ -1170,7 +784,6 @@ def analyze_oauth_url(url: str) -> list[Finding]:
             remediation = "Incluir siempre redirect_uri explícitamente y verificar que coincide con el registrado.",
         ))
 
-    # ── Scopes peligrosos ─────────────────────────────────────────────────────
     scope_val = params.get("scope", [""])[0].lower()
     peligrosos = [s for s in ["admin", "write:*", "read:*", "*", "root", "superuser"]
                   if s in scope_val]
@@ -1188,6 +801,10 @@ def analyze_oauth_url(url: str) -> list[Finding]:
 
     return hallazgos
 
+
+# =============================================================================
+# MOTOR PRINCIPAL DE AUDITORÍA
+# =============================================================================
 
 def audit_token(
     token: str,
@@ -1208,21 +825,9 @@ def audit_token(
     6. Construcción de token RS256→HS256 (si --pubkey)
     6b. Obtención de clave JWKS real y confusión RS256→HS256 (CVE-2026-22817)
     7. Detección de frameworks vulnerables (Hono / OpenBao, CVE-2026-22817/33757)
-
-    Parámetros
-    ----------
-    token     : str           — El token JWT a auditar
-    wordlist  : List[str]     — Secretos adicionales para fuerza bruta
-    pubkey_pem: str           — Clave pública RSA en PEM para RS256→HS256 (--pubkey)
-    jwks_url  : str           — URL del JWKS o issuer OIDC para obtener la clave real
-
-    Retorna
-    -------
-    AuditResult  — Resultado completo de la auditoría
     """
     result = AuditResult(token=token)
 
-    # Fase 1: Decodificación
     components = decode_jwt(token)
     result.components = components
     if components.error:
@@ -1233,27 +838,17 @@ def audit_token(
         ))
         return result
 
-    # Fase 2: Análisis de cabecera
     result.findings.extend(analyze_header(components))
-
-    # Fase 3: Análisis de claims
     result.findings.extend(analyze_claims(components))
-
-    # Fase 3b: Análisis de kid injection (path traversal / SQL injection)
     _test_kid_injection(components.header, result.findings)
-
-    # Fase 3c: Análisis de jku/x5u/x5c injection (JWKS spoofing)
     _test_jku_injection(components.header, result.findings)
 
-    # Fase 3d: Detección de posible flujo implícito OAuth
-    # Si el token tiene vida muy corta y sin refresh_token, puede proceder de flujo implícito
     payload = components.payload
     exp = payload.get("exp")
     iat = payload.get("iat")
     if exp is not None and iat is not None:
         try:
             vida_seg = int(exp) - int(iat)
-            # Un token de flujo implícito suele tener vigencia <= 1 hora y no lleva refresh_token
             if 0 < vida_seg <= 3600 and "refresh_token" not in payload:
                 result.findings.append(Finding(
                     severity    = "LOW",
@@ -1277,10 +872,8 @@ def audit_token(
         except (TypeError, ValueError):
             pass
 
-    # Fase 4: Token alg=none
     result.alg_none_token = craft_alg_none_token(components)
 
-    # Fase 5: Fuerza bruta de secreto HMAC
     alg = components.header.get("alg", "").upper()
     if alg.startswith("HS"):
         cracked = brute_force_secret(components, extra_wordlist=wordlist)
@@ -1299,7 +892,6 @@ def audit_token(
                               "Rotación del secreto requiere reinicio del servicio o recarga de configuración.",
             ))
 
-    # Fase 6: RS256 → HS256 (si se provee clave pública)
     if pubkey_pem and alg in ("RS256", "RS384", "RS512"):
         manipulated = craft_rs256_hs256_token(components, pubkey_pem)
         if manipulated:
@@ -1314,11 +906,8 @@ def audit_token(
                               "Usar la opción 'algorithms=[\"RS256\"]' en la librería JWT del servidor.",
             ))
 
-    # Fase 6b: Obtener clave pública real desde JWKS y ejecutar confusión RS256→HS256
-    # Si ya se proporcionó --pubkey, la clave JWKS actúa como refuerzo adicional.
     if alg in ("RS256", "RS384", "RS512"):
         _iss_str = str(components.payload.get("iss", ""))
-        # Prioridad de fuente JWKS: --jwks-url > claim iss (si es URL HTTP)
         _jwks_source = jwks_url
         if not _jwks_source and _iss_str.startswith("http"):
             _jwks_source = _iss_str
@@ -1352,7 +941,6 @@ def audit_token(
                         ),
                     ))
 
-    # Fase 7: Detección de frameworks vulnerables (Hono CVE-2026-22817, OpenBao CVE-2026-33757)
     _iss_str7 = str(components.payload.get("iss", ""))
     _chk_url  = jwks_url or (_iss_str7 if _iss_str7.startswith("http") else None)
     if _chk_url or any(s in _iss_str7.lower() for s in ("vault", "openbao", "/auth/")):
@@ -1360,494 +948,5 @@ def audit_token(
             detect_vulnerable_frameworks(components, check_url=_chk_url)
         )
 
-    # Ordenar hallazgos por severidad
     result.findings.sort(key=lambda f: f.order)
     return result
-
-
-# =============================================================================
-# SALIDAS
-# =============================================================================
-
-SEVERITY_COLOR = {
-    "CRITICAL": "bold red",
-    "HIGH":     "bold yellow",
-    "MEDIUM":   "bold magenta",
-    "LOW":      "cyan",
-    "INFO":     "green",
-}
-
-SEVERITY_STYLE_HTML = {
-    "CRITICAL": "#ff2222",
-    "HIGH":     "#ffcc00",
-    "MEDIUM":   "#cc44ff",
-    "LOW":      "#4af",
-    "INFO":     "#4caf50",
-}
-
-
-def print_token_detail(result: AuditResult) -> None:
-    """Imprime en consola el detalle completo de un AuditResult."""
-    components = result.components
-    if not components or components.error:
-        console.print(f"[bold red]  Error: {components.error if components else 'token inválido'}[/]")
-        return
-
-    # Tabla de claims del header
-    h_table = Table(title="JWT Header", show_lines=False, border_style="dim")
-    h_table.add_column("Claim", style="cyan", width=12)
-    h_table.add_column("Valor")
-    for k, v in components.header.items():
-        h_table.add_row(k, json.dumps(v) if not isinstance(v, str) else v)
-    console.print(h_table)
-
-    # Tabla de claims del payload
-    p_table = Table(title="JWT Payload", show_lines=False, border_style="dim")
-    p_table.add_column("Claim", style="cyan", width=18)
-    p_table.add_column("Valor")
-    p_table.add_column("Info", style="dim")
-    now = int(time.time())
-    for k, v in components.payload.items():
-        info = ""
-        if k in ("exp", "nbf", "iat") and isinstance(v, (int, float)):
-            import datetime
-            dt = datetime.datetime.utcfromtimestamp(int(v))
-            info = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-            if k == "exp":
-                delta = int(v) - now
-                info += f"  ({'en ' + str(abs(delta)) + 's' if delta > 0 else 'EXPIRADO ' + str(abs(delta)) + 's'}"
-                info += ")"
-        p_table.add_row(k, json.dumps(v) if not isinstance(v, str) else v, info)
-    console.print(p_table)
-
-    # Firma
-    if components.sig_b64:
-        console.print(f"  [dim]Firma (base64url):[/] {components.sig_b64[:40]}{'...' if len(components.sig_b64) > 40 else ''}")
-
-    # Hallazgos
-    if result.findings:
-        console.print("\n  [bold]HALLAZGOS:[/]")
-    for f in result.findings:
-        sev_color = SEVERITY_COLOR.get(f.severity, "white")
-        console.print(Panel(
-            f"{f.description}"
-            + (f"\n\n[dim]Evidencia:[/] {f.evidence}" if f.evidence else "")
-            + (f"\n\n[dim]Remediación:[/] {f.remediation}" if f.remediation else ""),
-            title=f"[{sev_color}][{f.severity}][/] {f.title}",
-            border_style="red" if f.severity == "CRITICAL" else "yellow" if f.severity == "HIGH" else "dim",
-        ))
-
-    # Token alg=none
-    if result.alg_none_token:
-        console.print("\n  [dim]Token alg=none (para prueba manual):[/]")
-        console.print(f"  [dim]{result.alg_none_token[:100]}...[/]" if len(result.alg_none_token) > 100 else f"  [dim]{result.alg_none_token}[/]")
-
-    # Secreto cracked
-    if result.cracked_secret is not None:
-        console.print(f"\n  [bold red]⚠ Secreto HMAC encontrado:[/] [bold]{result.cracked_secret!r}[/]")
-
-    # RS256→HS256 (clave pública manual con --pubkey)
-    if result.rs256_hs256_token:
-        console.print("\n  [bold yellow]Token RS256→HS256 generado (probar en el servidor):[/]")
-        console.print(f"  {result.rs256_hs256_token[:80]}...")
-
-    # RS256→HS256 con clave pública obtenida del JWKS real
-    if result.jwks_rs256_hs256_token:
-        console.print("\n  [bold red][JWT-CONF-010] Token RS256→HS256 con clave JWKS real (CRITICAL):[/]")
-        console.print(f"  {result.jwks_rs256_hs256_token[:80]}...")
-
-
-def to_json(results: list[AuditResult]) -> str:
-    """Serializa los resultados de auditoría a JSON."""
-    out = []
-    for r in results:
-        out.append({
-            "token":      r.token[:40] + "..." if len(r.token) > 40 else r.token,
-            "max_severity": r.max_severity,
-            "header":     r.components.header if r.components else {},
-            "payload":    r.components.payload if r.components else {},
-            "findings":   [
-                {"severity": f.severity, "title": f.title,
-                 "description": f.description, "evidence": f.evidence,
-                 "remediation": f.remediation}
-                for f in r.findings
-            ],
-            "cracked_secret":         r.cracked_secret,
-            "alg_none_token":         r.alg_none_token,
-            "rs256_hs256_token":      r.rs256_hs256_token,
-            "jwks_rs256_hs256_token": r.jwks_rs256_hs256_token,
-        })
-    return json.dumps({"generated_by": TOOL_NAME, "version": VERSION, "results": out},
-                       indent=2, ensure_ascii=False)
-
-
-def to_html(results: list[AuditResult]) -> str:
-    """Genera un informe HTML con tema oscuro."""
-    import datetime as _dt
-
-    def esc(s: str) -> str:
-        return (str(s).replace("&", "&amp;").replace("<", "&lt;")
-                .replace(">", "&gt;").replace('"', "&quot;"))
-
-    ts = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-
-    body = ""
-    for r in results:
-        tok_preview = r.token[:40] + "..." if len(r.token) > 40 else r.token
-        if not r.components or r.components.error:
-            body += f"<section><h2 class='tok-error'>{esc(tok_preview)}</h2><p class='error'>Error: {esc(r.components.error if r.components else 'inválido')}</p></section>"
-            continue
-
-        # Claims tables
-        h_rows = "".join(
-            f"<tr><td class='claim'>{esc(k)}</td><td><code>{esc(json.dumps(v) if not isinstance(v, str) else v)}</code></td></tr>"
-            for k, v in r.components.header.items()
-        )
-        p_rows = "".join(
-            f"<tr><td class='claim'>{esc(k)}</td><td><code>{esc(json.dumps(v) if not isinstance(v, str) else v)}</code></td></tr>"
-            for k, v in r.components.payload.items()
-        )
-
-        # Findings
-        finds_html = ""
-        for f in r.findings:
-            col = SEVERITY_STYLE_HTML.get(f.severity, "#aaa")
-            finds_html += (
-                f"<div class='finding'><span class='sev' style='color:{col}'>{esc(f.severity)}</span>"
-                f" <b>{esc(f.title)}</b>"
-                f"<p>{esc(f.description)}</p>"
-                + (f"<p class='evidence'><b>Evidencia:</b> {esc(f.evidence)}</p>" if f.evidence else "")
-                + (f"<p class='remediation'><b>Remediación:</b> {esc(f.remediation)}</p>" if f.remediation else "")
-                + "</div>"
-            )
-
-        # Manipulated tokens
-        manip = ""
-        if r.alg_none_token:
-            manip += f"<h4>Token alg=none</h4><pre class='token-box'>{esc(r.alg_none_token)}</pre>"
-        if r.cracked_secret is not None:
-            manip += f"<p class='cracked'>⚠ Secreto HMAC encontrado: <code>{esc(repr(r.cracked_secret))}</code></p>"
-        if r.rs256_hs256_token:
-            manip += f"<h4>Token RS256→HS256</h4><pre class='token-box'>{esc(r.rs256_hs256_token)}</pre>"
-
-        badge_color = SEVERITY_STYLE_HTML.get(r.max_severity, "#aaa")
-        body += (
-            f"<section><h2 class='tok-header'>{esc(tok_preview)}</h2>"
-            f"<div class='severity-badge' style='border-color:{badge_color}'>"
-            f"  {esc(r.max_severity)}</div>"
-            f"<h3>Header</h3><table class='claims'><tbody>{h_rows}</tbody></table>"
-            f"<h3>Payload</h3><table class='claims'><tbody>{p_rows}</tbody></table>"
-            + (f"<h3>Hallazgos ({len(r.findings)})</h3>{finds_html}" if r.findings else "")
-            + (f"<h3>Tokens manipulados</h3>{manip}" if manip else "")
-            + "</section>"
-        )
-
-    return f"""<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<title>VampSecure Labs — JWT Audit</title>
-<style>
-  *{{box-sizing:border-box;margin:0;padding:0}}
-  body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-        background:#0a0a0a;color:#e0e0e0;padding:2rem;}}
-  header{{border-bottom:2px solid #9c27b0;padding-bottom:1.5rem;margin-bottom:2rem;}}
-  .brand{{font-size:1.4rem;font-weight:700;color:#9c27b0;}}
-  .meta-bar{{color:#888;font-size:.85rem;margin-top:.4rem;}}
-  section{{background:#111;border:1px solid #1e1e1e;border-radius:8px;
-           padding:1.5rem;margin-bottom:1.5rem;}}
-  h2.tok-header{{color:#9c27b0;font-size:1rem;font-family:monospace;margin-bottom:.75rem;
-                 word-break:break-all;}}
-  h2.tok-error{{color:#ff4444;}}
-  h3{{color:#ce93d8;font-size:.9rem;text-transform:uppercase;letter-spacing:.06em;
-      margin:1rem 0 .4rem;}}
-  h4{{color:#aaa;font-size:.85rem;margin:.75rem 0 .3rem;}}
-  table.claims{{width:100%;border-collapse:collapse;margin-bottom:.75rem;}}
-  table.claims td{{padding:.35rem .6rem;border-bottom:1px solid #1a1a1a;
-                   font-size:.85rem;vertical-align:top;}}
-  td.claim{{color:#ce93d8;width:140px;font-weight:600;}}
-  code{{background:#0d0d0d;padding:.1rem .3rem;border-radius:3px;color:#9ecbff;
-        font-size:.82rem;word-break:break-all;}}
-  .finding{{border-left:3px solid #444;padding:.6rem 1rem;margin:.5rem 0;
-            background:#0d0d0d;border-radius:0 4px 4px 0;}}
-  .finding .sev{{font-weight:700;font-size:.85rem;text-transform:uppercase;margin-right:.5rem;}}
-  .finding p{{font-size:.85rem;margin-top:.4rem;color:#ccc;}}
-  .evidence{{color:#888;font-family:monospace;font-size:.8rem;}}
-  .remediation{{color:#4caf50;font-size:.82rem;}}
-  .severity-badge{{display:inline-block;border:2px solid #aaa;padding:.2rem .6rem;
-                   border-radius:4px;font-size:.85rem;font-weight:700;margin-bottom:.75rem;}}
-  .cracked{{color:#ff4444;font-weight:700;padding:.5rem;background:#2a0000;
-            border-radius:4px;margin:.5rem 0;}}
-  pre.token-box{{background:#0d0d0d;padding:.75rem;border-radius:4px;font-size:.75rem;
-                 word-break:break-all;white-space:pre-wrap;color:#ce93d8;overflow-x:auto;}}
-  footer{{margin-top:3rem;color:#444;font-size:.8rem;text-align:center;}}
-</style>
-</head>
-<body>
-<header>
-  <div class="brand">VampSecure Labs — JWT Audit v{VERSION}</div>
-  <p class="meta-bar">Generado: {ts} · Tokens analizados: {len(results)}</p>
-</header>
-{body}
-<footer>VampSecure Studios · VampSecure Labs Security Research Division · Uso exclusivo en auditorías autorizadas</footer>
-</body></html>"""
-
-
-# =============================================================================
-# CONVERSOR A INFORME UNIFICADO VSL
-# =============================================================================
-
-def _findings_vsl(results: list[AuditResult]) -> list:
-    """
-    Convierte los AuditResult al formato Finding de vampsec_report.
-
-    Solo se incluyen hallazgos de severidad MEDIUM, HIGH o CRITICAL.
-    Los tokens cracked y los tokens manipulados se incluyen como evidencia.
-
-    Parámetros
-    ----------
-    results : List[AuditResult]  — Resultados de la auditoría JWT
-
-    Retorna
-    -------
-    List[Finding]  — Lista de hallazgos en formato VSL con prefijo JWT-NNN
-    """
-    from vampsec_report import Finding as VSLFinding
-
-    INCLUDE = {"CRITICAL", "HIGH", "MEDIUM"}
-    vsl = []
-    n   = 0
-
-    for r in results:
-        tok_label = (r.token[:30] + "..." if len(r.token) > 30 else r.token)
-        for f in r.findings:
-            if f.severity not in INCLUDE:
-                continue
-            n += 1
-            vsl.append(VSLFinding(
-                id          = f"JWT-{n:03d}",
-                title       = f.title[:80],
-                severity    = f.severity,
-                description = f.description,
-                evidence    = (f"Token: {tok_label}\n" + f.evidence) if f.evidence else f"Token: {tok_label}",
-                affected    = tok_label,
-                remediation = f.remediation,
-                tags        = ["jwt", "authentication", f.severity.lower()],
-            ))
-
-    return vsl
-
-
-# =============================================================================
-# CLI
-# =============================================================================
-
-def parse_args() -> argparse.Namespace:
-    """Parsea los argumentos de línea de comandos."""
-    p = argparse.ArgumentParser(
-        prog=TOOL_NAME,
-        description=(
-            f"VampSecure Labs JWT Audit v{VERSION} — "
-            "Análisis de seguridad de JSON Web Tokens: "
-            "decodificación, alg=none, RS256→HS256 (con clave JWKS real), "
-            "fuerza bruta de secreto, análisis de claims, "
-            "detección de Hono (CVE-2026-22817) y OpenBao/Vault (CVE-2026-33757)."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Ejemplos:
-  %(prog)s --token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.xxx
-  %(prog)s --token <JWT> --wordlist secretos.txt
-  %(prog)s --token <JWT> --pubkey pub.pem
-  %(prog)s --token <JWT> --jwks-url https://auth.ejemplo.com
-  %(prog)s --token <JWT> --jwks-url https://auth.ejemplo.com/.well-known/jwks.json
-  %(prog)s --file tokens.txt --json salida.json --html salida.html
-  cat token.txt | %(prog)s --stdin
-        """,
-    )
-
-    src = p.add_argument_group("Origen del token")
-    grp = src.add_mutually_exclusive_group(required=False)
-    grp.add_argument("--token",  "-t", metavar="JWT",
-                     help="Token JWT a auditar (en línea de comandos)")
-    grp.add_argument("--file",   "-f", metavar="FILE",
-                     help="Fichero de texto con un token JWT por línea")
-    grp.add_argument("--stdin",        action="store_true",
-                     help="Leer token(s) de stdin (un token por línea)")
-
-    atk = p.add_argument_group("Opciones de ataque")
-    atk.add_argument("--wordlist", "-w", metavar="FILE",
-                     help="Wordlist adicional para fuerza bruta del secreto HMAC")
-    atk.add_argument("--pubkey", metavar="FILE",
-                     help="Clave pública RSA PEM para generar token RS256→HS256")
-    atk.add_argument("--jwks-url", metavar="URL",
-                     help=(
-                         "URL del JWKS o issuer OIDC para obtener la clave pública del servidor "
-                         "automáticamente y ejecutar el ataque de confusión RS256→HS256 con la "
-                         "clave real (JWT-CONF-010, CVE-2026-22817). "
-                         "Si se omite, se intenta con el claim 'iss' del token si es una URL HTTP. "
-                         "También activa la detección de Hono (CVE-2026-22817) y "
-                         "OpenBao/Vault (CVE-2026-33757) leyendo las cabeceras de respuesta."
-                     ))
-    atk.add_argument("--no-bruteforce", action="store_true",
-                     help="Omitir fase de fuerza bruta de secreto (más rápido)")
-    atk.add_argument("--oauth-url", metavar="URL",
-                     help=(
-                         "URL de autorización OAuth 2.0 a analizar (sin realizar petición de red). "
-                         "Comprueba: state (CSRF), code_challenge (PKCE), response_type=token (flujo implícito), "
-                         "redirect_uri y scopes permisivos. Compatible con --token (análisis conjunto) o solo."
-                     ))
-
-    out = p.add_argument_group("Salida")
-    out.add_argument("--json", metavar="FILE", help="Guardar resultados en JSON")
-    out.add_argument("--html", metavar="FILE", help="Guardar informe HTML dark-theme")
-    out.add_argument("--quiet", action="store_true", help="Suprimir banner")
-
-    from vampsec_report import add_report_args
-    add_report_args(p)
-
-    return p.parse_args()
-
-
-def main() -> None:
-    """Punto de entrada principal."""
-    console.print(BANNER, style="bold magenta")
-    args = parse_args()
-
-    # Cargar tokens
-    tokens: list[str] = []
-    if args.token:
-        tokens = [args.token.strip()]
-    elif args.file:
-        fp = Path(args.file)
-        if not fp.exists():
-            console.print(f"[bold red]  ERROR: Fichero no encontrado: {args.file}[/]")
-            sys.exit(1)
-        tokens = [l.strip() for l in fp.read_text(encoding="utf-8").splitlines() if l.strip()]
-    elif args.stdin:
-        tokens = [l.strip() for l in sys.stdin.readlines() if l.strip()]
-
-    # Analizar URL OAuth si se proporcionó (se puede usar sin token)
-    oauth_url = getattr(args, "oauth_url", None)
-    if oauth_url:
-        console.rule("[bold magenta]Análisis OAuth 2.0 URL[/]")
-        console.print(f"  [bold]URL:[/] {oauth_url[:120]}{'...' if len(oauth_url) > 120 else ''}")
-        oauth_findings = analyze_oauth_url(oauth_url)
-        if oauth_findings:
-            from rich.table import Table as _Table
-            tbl = _Table(show_header=True, header_style="bold dim", expand=True)
-            tbl.add_column("Severidad", width=10)
-            tbl.add_column("Título")
-            for f in oauth_findings:
-                color = {"CRITICAL": "bold red", "HIGH": "bold yellow",
-                         "MEDIUM": "bold magenta", "LOW": "cyan", "INFO": "green"}.get(f.severity, "white")
-                tbl.add_row(
-                    f"[{color}]{f.severity}[/{color}]",
-                    f.title,
-                )
-            console.print(tbl)
-            for f in oauth_findings:
-                if f.evidence:
-                    console.print(f"  [dim]Evidencia: {f.evidence[:200]}[/]")
-                if f.remediation:
-                    from rich.panel import Panel as _Panel
-                    console.print(_Panel(f.remediation, title="Remediación", border_style="dim"))
-        else:
-            console.print("  [green]Sin hallazgos en el URL OAuth analizado.[/]")
-        console.print()
-
-    if not tokens:
-        if oauth_url:
-            # Si solo se analizó el URL OAuth, salir limpiamente
-            sys.exit(0)
-        console.print("[bold red]  ERROR: No se han proporcionado tokens JWT ni --oauth-url.[/]")
-        sys.exit(1)
-
-    # Cargar wordlist adicional
-    wordlist: list[str] | None = None
-    if args.wordlist and not args.no_bruteforce:
-        wp = Path(args.wordlist)
-        if not wp.exists():
-            console.print(f"[yellow]  ⚠ Wordlist no encontrada: {args.wordlist}[/]")
-        else:
-            wordlist = [l.strip() for l in wp.read_text(encoding="utf-8").splitlines() if l.strip()]
-            console.print(f"  [dim]Wordlist cargada: {len(wordlist)} secretos[/]")
-
-    # Cargar clave pública (--pubkey)
-    pubkey_pem: str | None = None
-    if args.pubkey:
-        pk_path = Path(args.pubkey)
-        if not pk_path.exists():
-            console.print(f"[yellow]  ⚠ Clave pública no encontrada: {args.pubkey}[/]")
-        else:
-            pubkey_pem = pk_path.read_text(encoding="utf-8")
-            console.print(f"  [dim]Clave pública cargada: {args.pubkey}[/]")
-
-    # URL del JWKS o issuer OIDC (--jwks-url)
-    jwks_url_arg: str | None = getattr(args, "jwks_url", None)
-    if jwks_url_arg:
-        console.print(f"  [dim]JWKS URL: {jwks_url_arg}[/]")
-
-    # Auditar cada token
-    results: list[AuditResult] = []
-    for i, token in enumerate(tokens, 1):
-        if len(tokens) > 1:
-            console.print(f"\n[bold cyan]  ── Token {i}/{len(tokens)} ──[/]")
-
-        result = audit_token(
-            token,
-            wordlist=wordlist if not args.no_bruteforce else None,
-            pubkey_pem=pubkey_pem,
-            jwks_url=jwks_url_arg,
-        )
-        results.append(result)
-        print_token_detail(result)
-
-    # Resumen
-    total_findings = sum(len(r.findings) for r in results)
-    crit = sum(1 for r in results for f in r.findings if f.severity == "CRITICAL")
-    high = sum(1 for r in results for f in r.findings if f.severity == "HIGH")
-    cracked = sum(1 for r in results if r.cracked_secret is not None)
-
-    sev_style = "bold red" if crit > 0 else ("bold yellow" if high > 0 else "bold green")
-    console.print(
-        f"\n[{sev_style}]  RESUMEN: {len(results)} token(s) · "
-        f"{total_findings} hallazgos · {crit} CRÍTICO · {high} ALTO"
-        + (f" · {cracked} secreto(s) descubierto(s)" if cracked else "")
-        + "[/]"
-    )
-
-    # Exportación JSON
-    if args.json:
-        Path(args.json).write_text(to_json(results), encoding="utf-8")
-        console.print(f"[green]  ✔ JSON guardado: {args.json}[/]")
-
-    # Exportación HTML
-    if args.html:
-        Path(args.html).write_text(to_html(results), encoding="utf-8")
-        console.print(f"[green]  ✔ HTML guardado: {args.html}[/]")
-
-    # Informe unificado VSL
-    if getattr(args, "report_html", None) or getattr(args, "report_pdf", None):
-        from vampsec_report import VampSecReport, meta_from_args
-        meta    = meta_from_args(args, tool=TOOL_NAME, version=VERSION)
-        report  = VampSecReport(meta=meta, findings=_findings_vsl(results))
-        if args.report_html:
-            report.to_html_client(args.report_html)
-            console.print(f"[green]  ✔ Informe cliente HTML: {args.report_html}[/]")
-        if args.report_pdf:
-            report.to_pdf(args.report_pdf)
-            console.print(f"[green]  ✔ Informe cliente PDF: {args.report_pdf}[/]")
-
-    # Exit codes para CI/CD
-    if crit > 0:
-        sys.exit(2)
-    elif high > 0:
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        console.print("\n[dim]  Auditoría interrumpida.[/]")
-        sys.exit(130)
