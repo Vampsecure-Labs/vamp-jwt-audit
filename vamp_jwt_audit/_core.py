@@ -14,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from ._models import VERSION, TOOL_NAME, _COMMON_SECRETS, JWTComponents, Finding, AuditResult
+from ._models import VERSION, _COMMON_SECRETS, JWTComponents, Finding, AuditResult
 
 # =============================================================================
 # UTILIDADES BASE64URL
