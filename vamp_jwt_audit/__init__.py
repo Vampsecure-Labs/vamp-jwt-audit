@@ -19,7 +19,7 @@ API pública
 from ._models import (
     VERSION,
     TOOL_NAME,
-    _COMMON_SECRETS,
+    _COMMON_SECRETS,  # noqa: F401
     JWTComponents,
     Finding,
     AuditResult,
@@ -27,7 +27,7 @@ from ._models import (
 from ._core import (
     _b64url_decode,
     _b64url_encode,
-    _jwk_rsa_to_pem,
+    _jwk_rsa_to_pem,  # noqa: F401
     fetch_jwks_public_key,
     decode_jwt,
     craft_alg_none_token,
@@ -36,16 +36,16 @@ from ._core import (
     analyze_claims,
     analyze_header,
     detect_vulnerable_frameworks,
-    _test_kid_injection,
-    _test_jku_injection,
+    _test_kid_injection,  # noqa: F401
+    _test_jku_injection,  # noqa: F401
     analyze_oauth_url,
     audit_token,
 )
 from ._report import (
-    SEVERITY_STYLE_HTML,
+    SEVERITY_STYLE_HTML,  # noqa: F401
     to_json,
     to_html,
-    _findings_vsl,
+    _findings_vsl,  # noqa: F401
 )
 from .cli import main
 
