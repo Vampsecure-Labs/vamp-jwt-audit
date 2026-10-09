@@ -154,7 +154,7 @@ python3 vamp_jwt_audit.py --file tokens.txt \
 ### Sample Output
 
 ```
-$ python3 vamp_jwt_audit.py --token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMyIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMH0.abc123
+$ python3 vamp_jwt_audit.py --token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMyIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMH0.EXAMPLE_SIG
 
 ╔══════════════════════════════════════════════════════════╗
 ║           vamp-jwt-audit — VampSecure Labs               ║
@@ -179,7 +179,7 @@ Phase 3 — Claims analysis ............ HIGH: privileged role claim detected
 
 Phase 4 — HMAC brute-force ........... HIGH: secret found in built-in wordlist
   Secret: "secret"
-  Forged HS256 token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEyMyIsInJvbGUiOiJhZG1pbiJ9.FORGED
+  Forged HS256 token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEyMyIsInJvbGUiOiJhZG1pbiJ9.FORGED_SIG
 
 ┌────────────────────────────────────────────────────────┐
 │  CRITICAL  2   HIGH  2   MEDIUM  0   LOW  1   INFO  0  │
