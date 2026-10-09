@@ -9,11 +9,18 @@
   <img src="https://github.com/Vampsecure-Labs/vamp-jwt-audit/actions/workflows/ci.yml/badge.svg" alt="CI"/>
 </p>
 
-## Overview
+> 🇬🇧 [English](#english) · 🇪🇸 [Español](#español)
+
+---
+
+<a name="english"></a>
+## 🇬🇧 English
+
+### Overview
 
 `vamp-jwt-audit` is a JWT (JSON Web Token) security auditor that tests tokens for the full range of documented attack classes: `alg=none` bypass, RS256-to-HS256 algorithm confusion, HMAC brute-force against a 200+ entry built-in wordlist, header injection attacks (`jku`, `x5u`, `jwk`, `kid`), and claims-level security issues. It accepts tokens from the command line, a file, or standard input — making it easy to slot into proxies, CI pipelines, or capture-the-flag workflows. The optional `cryptography` library unlocks the RS256-to-HS256 attack when a public key is supplied.
 
-## Features
+### Features
 
 - Six-phase attack sequence: decode without verification, header analysis, claims analysis, craft `alg=none` token, HMAC brute-force, RS256→HS256 confusion
 - Built-in wordlist with 200+ common secrets including framework defaults, Docker/Kubernetes defaults, and the empty string
@@ -24,18 +31,17 @@
 - Supports single token (`--token`), file of tokens (`--file`), and stdin pipeline mode (`--stdin`)
 - Export to Console (Rich panels), JSON, and HTML (dark-theme)
 
-## Requirements
+### Requirements
 
 - Python 3.9 or later
 - `rich >= 13.7.0`
 - Optional: `cryptography >= 41.0` — required for `--pubkey` (RS256→HS256 confusion attack)
 
-## Installation
-
+### Installation
 
 ```bash
 pip install vamp-jwt-audit
-# o con Homebrew:
+# or with Homebrew:
 brew install vampsecure-labs/labs/vamp-jwt-audit
 ```
 
@@ -49,7 +55,7 @@ pip install -r requirements.txt
 pip install cryptography
 ```
 
-## Usage
+### Usage
 
 ```
 python3 vamp_jwt_audit.py --help
@@ -77,7 +83,7 @@ usage: vamp_jwt_audit.py [-h]
 vamp-jwt-audit — JWT Security Auditor (VampSecure Labs)
 ```
 
-## Examples
+### Examples
 
 ```bash
 # Audit a single token passed directly
@@ -107,7 +113,7 @@ python3 vamp_jwt_audit.py --file tokens.txt \
     --auditor "J. Smith" --report-html client_report.html --report-pdf client_report.pdf
 ```
 
-## CLI Reference
+### CLI Reference
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -127,7 +133,7 @@ python3 vamp_jwt_audit.py --file tokens.txt \
 | `--report-html FILE` | — | Export unified VSL client report (HTML) |
 | `--report-pdf FILE` | — | Export unified VSL client report (PDF, requires fpdf2) |
 
-## Output Formats
+### Output Formats
 
 | Format | Flag | Description |
 |--------|------|-------------|
@@ -137,7 +143,7 @@ python3 vamp_jwt_audit.py --file tokens.txt \
 | Client HTML | `--report-html FILE` | Unified VampSecure Labs engagement report |
 | Client PDF | `--report-pdf FILE` | PDF version of the VSL client report |
 
-## Exit Codes
+### Exit Codes
 
 | Code | Meaning | CI/CD Behavior |
 |------|---------|----------------|
@@ -145,7 +151,7 @@ python3 vamp_jwt_audit.py --file tokens.txt \
 | `1` | High-severity findings detected | Pipeline fails — review required |
 | `2` | Critical-severity findings detected | Pipeline fails — immediate action required |
 
-## Sample Output
+### Sample Output
 
 ```
 $ python3 vamp_jwt_audit.py --token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMyIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMH0.abc123
@@ -183,7 +189,7 @@ Exit code: 2  (CRITICAL findings — immediate action required)
 
 ---
 
-## Why vamp-jwt-audit vs. jwt_tool · jwt.io · OWASP ZAP JWT addon
+### Why vamp-jwt-audit vs. jwt_tool · jwt.io · OWASP ZAP JWT addon
 
 | Feature | vamp-jwt-audit | jwt_tool | jwt.io | ZAP JWT addon |
 |---------|:---:|:---:|:---:|:---:|
@@ -204,7 +210,7 @@ Exit code: 2  (CRITICAL findings — immediate action required)
 
 ---
 
-## Check Coverage
+### Check Coverage
 
 | Check ID | Description | Severity | Standard |
 |----------|-------------|----------|----------|
@@ -223,20 +229,202 @@ Exit code: 2  (CRITICAL findings — immediate action required)
 
 ---
 
-## Legal Notice
+### Legal Notice
 
 Use exclusively on systems you own or for which you hold explicit written authorization from the system owner. VampSecure Studios assumes no liability for unauthorized use.
 
-## Part of VampSecure Labs Toolkit
+### Part of VampSecure Labs Toolkit
 
 `vamp-jwt-audit` is one tool in the VampSecure Labs security research toolkit. For the full toolkit including the orchestrator that runs all tools in sequence and aggregates findings into a single engagement report, see:
 
 - Portfolio: [github.com/belky-me](https://github.com/belky-me)
 - Orchestrator: [github.com/belky-me/vamp-orchestrator](https://github.com/belky-me/vamp-orchestrator)
 
+### Version History
+
+| Version | Main changes |
+|---------|-------------|
+| v1.3.1 | Bilingual README (EN/ES) |
+| v1.3.0 | Initial public release — six attack phases, 200+ wordlist, RS256→HS256, claims analysis, engagement reports |
+
 ---
 
 © VampSecure Studios — VampSecure Labs Security Research Division
 
-## Versión
-v1.3.0 — VampSecure Labs Security Research Division
+---
+---
+
+<a name="español"></a>
+## 🇪🇸 Español
+
+### Descripción general
+
+`vamp-jwt-audit` es un auditor de seguridad JWT (JSON Web Token) que prueba tokens para el rango completo de clases de ataque documentadas: bypass `alg=none`, confusión de algoritmo RS256-a-HS256, fuerza bruta HMAC contra una lista de palabras integrada de más de 200 entradas, ataques de inyección de cabeceras (`jku`, `x5u`, `jwk`, `kid`) y problemas de seguridad a nivel de claims. Acepta tokens desde la línea de comandos, un fichero o la entrada estándar — lo que facilita su integración en proxies, pipelines CI o flujos de trabajo capture-the-flag. La librería opcional `cryptography` desbloquea el ataque RS256-a-HS256 cuando se proporciona una clave pública.
+
+### Características
+
+- Secuencia de ataque de seis fases: decodificar sin verificación, análisis de cabeceras, análisis de claims, crear token `alg=none`, fuerza bruta HMAC, confusión RS256→HS256
+- Lista de palabras integrada con más de 200 secretos comunes incluyendo valores por defecto de frameworks, valores por defecto de Docker/Kubernetes y la cadena vacía
+- Checks de inyección de cabeceras: `alg=none` (CRITICAL), inyección de URL de clave `jku`/`x5u` (CRITICAL), `jwk` inline (CRITICAL), path traversal de `kid` y patrones de inyección SQL (CRITICAL)
+- Checks de seguridad de claims: falta de `exp` (HIGH), token caducado (MEDIUM), TTL > 24 horas (LOW), `nbf` en el futuro (MEDIUM), falta de `iss`/`aud` (LOW), claims de roles privilegiados (HIGH), PII en payload (MEDIUM)
+- Ataque de confusión RS256→HS256: forja un token HS256 de apariencia válida firmado con la clave pública RSA (requiere `--pubkey` y `cryptography`)
+- Soporte de lista de palabras personalizada (`--wordlist`) con fallback automático a la lista integrada
+- Soporta token único (`--token`), fichero de tokens (`--file`) y modo pipeline stdin (`--stdin`)
+- Exportación a Consola (paneles Rich), JSON y HTML (dark-theme)
+
+### Requisitos
+
+- Python 3.9 o posterior
+- `rich >= 13.7.0`
+- Opcional: `cryptography >= 41.0` — requerido para `--pubkey` (ataque de confusión RS256→HS256)
+
+### Instalación
+
+```bash
+pip install vamp-jwt-audit
+# o con Homebrew:
+brew install vampsecure-labs/labs/vamp-jwt-audit
+```
+
+```bash
+git clone https://github.com/belky-me/vamp-jwt-audit.git
+cd vamp-jwt-audit
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+# Para soporte del ataque RS256→HS256:
+pip install cryptography
+```
+
+### Uso
+
+```
+python3 vamp_jwt_audit.py --help
+```
+
+### Ejemplos
+
+```bash
+# Auditar un token único pasado directamente
+python3 vamp_jwt_audit.py --token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+# Leer token desde fichero
+python3 vamp_jwt_audit.py --file token_capturado.txt
+
+# Pasar un token por pipe desde otra herramienta
+cat token.txt | python3 vamp_jwt_audit.py --stdin
+
+# Usar una lista de palabras personalizada para fuerza bruta HMAC
+python3 vamp_jwt_audit.py --token <JWT> --wordlist /ruta/a/secretos.txt
+
+# Ejecutar el ataque de confusión RS256→HS256 usando una clave pública capturada
+python3 vamp_jwt_audit.py --token <JWT> --pubkey clave_publica_servidor.pem
+
+# Omitir fuerza bruta (solo análisis estático, más rápido)
+python3 vamp_jwt_audit.py --token <JWT> --no-bruteforce
+
+# Exportar hallazgos a JSON y HTML
+python3 vamp_jwt_audit.py --token <JWT> --json resultados.json --html informe.html
+
+# Generar informe de engagement listo para el cliente
+python3 vamp_jwt_audit.py --file tokens.txt \
+    --client "Acme Corp" --engagement "Revisión Implementación JWT Q3 2026" \
+    --auditor "J. García" --report-html informe_cliente.html --report-pdf informe_cliente.pdf
+```
+
+### Referencia CLI
+
+| Flag | Por defecto | Descripción |
+|------|-------------|-------------|
+| `--token / -t JWT` | — | Cadena de token JWT (mutuamente exclusivo con `--file`/`--stdin`) |
+| `--file / -f FILE` | — | Fichero que contiene uno o más tokens JWT |
+| `--stdin` | — | Leer token de la entrada estándar |
+| `--wordlist / -w FILE` | integrada (200+) | Lista de palabras personalizada para fuerza bruta HMAC |
+| `--pubkey FILE` | — | Fichero PEM de clave pública RSA/EC para confusión RS256→HS256 |
+| `--no-bruteforce` | off | Omitir la fase de fuerza bruta HMAC |
+| `--json FILE` | — | Exportar resultados a JSON |
+| `--html FILE` | — | Exportar informe HTML dark-theme |
+| `--quiet` | off | Suprimir banner |
+| `--client TEXT` | — | Nombre del cliente para el informe de engagement VSL |
+| `--engagement TEXT` | — | Título del engagement para el informe VSL |
+| `--auditor TEXT` | — | Nombre del auditor para el informe VSL |
+| `--report-scope TEXT` | — | Descripción del alcance para el informe VSL |
+| `--report-html FILE` | — | Exportar informe unificado VSL del cliente (HTML) |
+| `--report-pdf FILE` | — | Exportar informe unificado VSL del cliente (PDF, requiere fpdf2) |
+
+### Formatos de salida
+
+| Formato | Flag | Descripción |
+|---------|------|-------------|
+| Consola | (por defecto) | Paneles Rich con cabecera/payload decodificados, resultados de ataques y clasificaciones de severidad |
+| JSON | `--json FILE` | Conjunto completo de resultados legible por máquina incluyendo cadenas de tokens forjados |
+| HTML | `--html FILE` | Informe dark-theme standalone |
+| HTML cliente | `--report-html FILE` | Informe de engagement unificado VampSecure Labs |
+| PDF cliente | `--report-pdf FILE` | Versión PDF del informe VSL del cliente |
+
+### Códigos de salida
+
+| Código | Significado | Comportamiento CI/CD |
+|--------|-------------|---------------------|
+| `0` | Sin hallazgos críticos ni altos | El pipeline pasa |
+| `1` | Hallazgos de severidad alta detectados | El pipeline falla — revisión requerida |
+| `2` | Hallazgos de severidad crítica detectados | El pipeline falla — acción inmediata requerida |
+
+---
+
+### Why vamp-jwt-audit vs. jwt_tool · jwt.io · OWASP ZAP JWT addon
+
+| Característica | vamp-jwt-audit | jwt_tool | jwt.io | ZAP JWT addon |
+|---------|:---:|:---:|:---:|:---:|
+| Detección bypass `alg=none` | ✅ | ✅ | ❌ | ✅ |
+| Confusión de algoritmo RS256→HS256 | ✅ | ✅ | ❌ | ❌ |
+| Fuerza bruta HMAC (lista integrada 200+) | ✅ | ✅ | ❌ | ❌ |
+| Checks de inyección `jku` / `x5u` / `jwk` / `kid` | ✅ | ✅ | ❌ | ⚠️ parcial |
+| Análisis de seguridad a nivel de claims | ✅ | ❌ | ❌ | ❌ |
+| Exit codes CI/CD (0 / 1 / 2) | ✅ | ❌ | ❌ | ❌ |
+| Informe de engagement HTML + PDF listo para cliente | ✅ | ❌ | ❌ | ❌ |
+| Paquete Python importable | ✅ | ❌ | ❌ | ❌ |
+| Modo batch stdin / fichero | ✅ | ✅ | ❌ | ❌ |
+
+---
+
+### Cobertura de checks
+
+| Check ID | Descripción | Severidad | Estándar |
+|----------|-------------|-----------|----------|
+| JWT-001 | Bypass `alg=none` — token sin firma aceptado por el servidor | CRITICAL | RFC 7519 §8 / OWASP ASVS V3.5.8 |
+| JWT-002 | Inyección de cabecera `jku` — URL JWKS controlada por atacante | CRITICAL | RFC 7515 §4.1.2 |
+| JWT-003 | Inyección de cabecera `x5u` — URL de certificado controlada por atacante | CRITICAL | RFC 7515 §4.1.5 |
+| JWT-004 | Cabecera `jwk` inline — clave embebida dentro del propio token | CRITICAL | RFC 7515 §4.1.3 |
+| JWT-005 | Ataque de confusión de algoritmo RS256→HS256 | CRITICAL | Patrón CVE-2015-9235 / OWASP ASVS V3.5 |
+| JWT-006 | Fuerza bruta de secreto HMAC — secreto débil o por defecto encontrado | HIGH | OWASP ASVS V3.5.4 |
+| JWT-007 | Patrón de path traversal de `kid` detectado en cabecera | CRITICAL | OWASP ASVS V3.5.7 |
+| JWT-008 | Patrón de inyección SQL de `kid` detectado en cabecera | CRITICAL | OWASP ASVS V3.5.7 |
+| JWT-009 | Claim `exp` ausente — el token no caduca nunca | HIGH | RFC 7519 §4.1.4 |
+| JWT-010 | Claim de rol privilegiado (`admin`, `superuser`, `root`, `god`) | HIGH | OWASP ASVS V3.5 |
+| JWT-011 | PII en payload (patrones de email, SSN, número de teléfono) | MEDIUM | RGPD Art. 5 / OWASP ASVS V3.5 |
+| JWT-012 | TTL > 24 horas — token de larga duración | LOW | OWASP ASVS V3.5.1 |
+
+---
+
+### Aviso legal
+
+Uso exclusivo en sistemas de tu propiedad o para los que dispongas de autorización escrita explícita del propietario. VampSecure Studios no asume responsabilidad por el uso no autorizado.
+
+### Parte del toolkit VampSecure Labs
+
+`vamp-jwt-audit` es una herramienta del toolkit de investigación de seguridad de VampSecure Labs. Para el toolkit completo incluyendo el orquestador que ejecuta todas las herramientas en secuencia y agrega los hallazgos en un único informe de engagement, consulta:
+
+- Portfolio: [github.com/belky-me](https://github.com/belky-me)
+- Orquestador: [github.com/belky-me/vamp-orchestrator](https://github.com/belky-me/vamp-orchestrator)
+
+### Historial de versiones
+
+| Versión | Cambios principales |
+|---------|---------------------|
+| v1.3.1 | README bilingüe (EN/ES) |
+| v1.3.0 | Lanzamiento público inicial — seis fases de ataque, lista de 200+ palabras, RS256→HS256, análisis de claims, informes de engagement |
+
+---
+
+© VampSecure Studios — VampSecure Labs Security Research Division
