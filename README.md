@@ -244,6 +244,7 @@ Use exclusively on systems you own or for which you hold explicit written author
 
 | Version | Main changes |
 |---------|-------------|
+| v1.4.0 | Modularisation to importable Python package (lib+cli) |
 | v1.3.1 | Bilingual README (EN/ES) |
 | v1.3.0 | Initial public release — six attack phases, 200+ wordlist, RS256→HS256, claims analysis, engagement reports |
 
@@ -422,6 +423,7 @@ Uso exclusivo en sistemas de tu propiedad o para los que dispongas de autorizaci
 
 | Versión | Cambios principales |
 |---------|---------------------|
+| v1.4.0 | Modularización a paquete Python instalable (lib+cli) |
 | v1.3.1 | README bilingüe (EN/ES) |
 | v1.3.0 | Lanzamiento público inicial — seis fases de ataque, lista de 200+ palabras, RS256→HS256, análisis de claims, informes de engagement |
 
