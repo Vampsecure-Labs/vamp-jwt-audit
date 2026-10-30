@@ -4,7 +4,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white" alt="Python 3.9+"/>
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey" alt="Platform"/>
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License MIT"/>
+  <img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License AGPL-3.0"/>
   <img src="https://img.shields.io/badge/VampSecure-Labs-magenta" alt="VampSecure Labs"/>
   <img src="https://github.com/Vampsecure-Labs/vamp-jwt-audit/actions/workflows/ci.yml/badge.svg" alt="CI"/>
 </p>
@@ -132,6 +132,7 @@ python3 vamp_jwt_audit.py --file tokens.txt \
 | `--report-scope TEXT` | — | Scope description for VSL engagement report |
 | `--report-html FILE` | — | Export unified VSL client report (HTML) |
 | `--report-pdf FILE` | — | Export unified VSL client report (PDF, requires fpdf2) |
+| `--lang {en,es}` | en | Output language: `en` English, `es` Spanish |
 
 ### Output Formats
 
@@ -244,6 +245,7 @@ Use exclusively on systems you own or for which you hold explicit written author
 
 | Version | Main changes |
 |---------|-------------|
+| v1.5.0 | Bilingual EN/ES output via `--lang en|es` |
 | v1.4.0 | Modularisation to importable Python package (lib+cli) |
 | v1.3.1 | Bilingual README (EN/ES) |
 | v1.3.0 | Initial public release — six attack phases, 200+ wordlist, RS256→HS256, claims analysis, engagement reports |
@@ -352,6 +354,7 @@ python3 vamp_jwt_audit.py --file tokens.txt \
 | `--report-scope TEXT` | — | Descripción del alcance para el informe VSL |
 | `--report-html FILE` | — | Exportar informe unificado VSL del cliente (HTML) |
 | `--report-pdf FILE` | — | Exportar informe unificado VSL del cliente (PDF, requiere fpdf2) |
+| `--lang {en,es}` | en | Idioma de salida: `en` inglés, `es` español |
 
 ### Formatos de salida
 
@@ -423,6 +426,7 @@ Uso exclusivo en sistemas de tu propiedad o para los que dispongas de autorizaci
 
 | Versión | Cambios principales |
 |---------|---------------------|
+| v1.5.0 | Salida bilingüe EN/ES mediante `--lang en|es` |
 | v1.4.0 | Modularización a paquete Python instalable (lib+cli) |
 | v1.3.1 | README bilingüe (EN/ES) |
 | v1.3.0 | Lanzamiento público inicial — seis fases de ataque, lista de 200+ palabras, RS256→HS256, análisis de claims, informes de engagement |
