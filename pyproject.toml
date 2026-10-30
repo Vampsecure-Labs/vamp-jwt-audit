@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vamp-jwt-audit"
-version = "1.4.0"
+version = "1.5.0"
 description = "JWT security auditor — alg=none, RS256-to-HS256 confusion, HMAC brute force, kid/jku injection · librería importable"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
