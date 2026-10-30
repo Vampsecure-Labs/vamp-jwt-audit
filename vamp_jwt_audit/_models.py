@@ -7,8 +7,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-VERSION   = "1.4.0"
+VERSION   = "1.5.0"
 TOOL_NAME = "vamp-jwt-audit"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bilingual support
+# ─────────────────────────────────────────────────────────────────────────────
+
+LANG: str = 'en'
+
+
+def t(en: str, es: str) -> str:
+    """Return the string for the active language (resolved at call time)."""
+    return es if LANG == 'es' else en
 
 # =============================================================================
 # SECRETOS COMUNES PARA FUERZA BRUTA

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from ._models import VERSION, TOOL_NAME, AuditResult
+from ._models import VERSION, TOOL_NAME, AuditResult, t
 
 SEVERITY_STYLE_HTML = {
     "CRITICAL": "#ff2222",
@@ -75,8 +75,8 @@ def to_html(results: list[AuditResult]) -> str:
                 f"<div class='finding'><span class='sev' style='color:{col}'>{esc(f.severity)}</span>"
                 f" <b>{esc(f.title)}</b>"
                 f"<p>{esc(f.description)}</p>"
-                + (f"<p class='evidence'><b>Evidencia:</b> {esc(f.evidence)}</p>" if f.evidence else "")
-                + (f"<p class='remediation'><b>Remediación:</b> {esc(f.remediation)}</p>" if f.remediation else "")
+                + (f"<p class='evidence'><b>{t('Evidence', 'Evidencia')}:</b> {esc(f.evidence)}</p>" if f.evidence else "")
+                + (f"<p class='remediation'><b>{t('Remediation', 'Remediación')}:</b> {esc(f.remediation)}</p>" if f.remediation else "")
                 + "</div>"
             )
 
@@ -84,7 +84,7 @@ def to_html(results: list[AuditResult]) -> str:
         if r.alg_none_token:
             manip += f"<h4>Token alg=none</h4><pre class='token-box'>{esc(r.alg_none_token)}</pre>"
         if r.cracked_secret is not None:
-            manip += f"<p class='cracked'>⚠ Secreto HMAC encontrado: <code>{esc(repr(r.cracked_secret))}</code></p>"
+            manip += f"<p class='cracked'>⚠ {t('HMAC secret found', 'Secreto HMAC encontrado')}: <code>{esc(repr(r.cracked_secret))}</code></p>"
         if r.rs256_hs256_token:
             manip += f"<h4>Token RS256→HS256</h4><pre class='token-box'>{esc(r.rs256_hs256_token)}</pre>"
 
@@ -95,13 +95,13 @@ def to_html(results: list[AuditResult]) -> str:
             f"  {esc(r.max_severity)}</div>"
             f"<h3>Header</h3><table class='claims'><tbody>{h_rows}</tbody></table>"
             f"<h3>Payload</h3><table class='claims'><tbody>{p_rows}</tbody></table>"
-            + (f"<h3>Hallazgos ({len(r.findings)})</h3>{finds_html}" if r.findings else "")
-            + (f"<h3>Tokens manipulados</h3>{manip}" if manip else "")
+            + (f"<h3>{t('Findings', 'Hallazgos')} ({len(r.findings)})</h3>{finds_html}" if r.findings else "")
+            + (f"<h3>{t('Manipulated tokens', 'Tokens manipulados')}</h3>{manip}" if manip else "")
             + "</section>"
         )
 
     return f"""<!DOCTYPE html>
-<html lang="es">
+<html lang="{t('en', 'es')}">
 <head>
 <meta charset="utf-8">
 <title>VampSecure Labs — JWT Audit</title>
@@ -144,10 +144,10 @@ def to_html(results: list[AuditResult]) -> str:
 <body>
 <header>
   <div class="brand">VampSecure Labs — JWT Audit v{VERSION}</div>
-  <p class="meta-bar">Generado: {ts} · Tokens analizados: {len(results)}</p>
+  <p class="meta-bar">{t('Generated', 'Generado')}: {ts} · {t('Tokens analysed', 'Tokens analizados')}: {len(results)}</p>
 </header>
 {body}
-<footer>VampSecure Studios · VampSecure Labs Security Research Division · Uso exclusivo en auditorías autorizadas</footer>
+<footer>VampSecure Studios · VampSecure Labs Security Research Division · {t('For authorized security audits only', 'Uso exclusivo en auditorías autorizadas')}</footer>
 </body></html>"""
 
 
