@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-VERSION   = "1.5.0"
+VERSION   = "1.6.0"
 TOOL_NAME = "vamp-jwt-audit"
 
 # ─────────────────────────────────────────────────────────────────────────────

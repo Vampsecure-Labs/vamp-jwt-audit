@@ -28,7 +28,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-jwt-audit v1.5.0 · JWT Security Auditor
+  vamp-jwt-audit v1.6.0 · JWT Security Auditor
   ────────────────────────────────────────────────────────────────────────
   FOR AUTHORIZED SECURITY AUDITS ONLY · Unauthorized use is illegal
 """
@@ -108,8 +108,28 @@ def print_token_detail(result: AuditResult) -> None:
         console.print(f"  {result.jwks_rs256_hs256_token[:80]}...")
 
 
+def _detect_lang() -> str:
+    import os as _os
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--lang" and i + 1 < len(argv):
+            v = argv[i + 1]
+            return v if v in ("en", "es") else "en"
+        if arg.startswith("--lang="):
+            v = arg.split("=", 1)[1]
+            return v if v in ("en", "es") else "en"
+    for var in ("LANG", "LANGUAGE"):
+        val = _os.environ.get(var, "")
+        if val.lower().startswith("es"):
+            return "es"
+    return "en"
+
+
 def parse_args() -> argparse.Namespace:
     """Parsea los argumentos de línea de comandos."""
+    import vamp_jwt_audit._models as _models_mod
+    _models_mod.LANG = _detect_lang()
+
     p = argparse.ArgumentParser(
         prog=TOOL_NAME,
         description=(
