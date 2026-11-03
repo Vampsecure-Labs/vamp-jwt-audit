@@ -245,6 +245,7 @@ Use exclusively on systems you own or for which you hold explicit written author
 
 | Version | Main changes |
 |---------|-------------|
+| v1.6.0 | Bilingual `--help` menu: `_detect_lang()` pre-parser detects `--lang` / `LANG` env var |
 | v1.5.0 | Bilingual EN/ES output via `--lang en|es` |
 | v1.4.0 | Modularisation to importable Python package (lib+cli) |
 | v1.3.1 | Bilingual README (EN/ES) |
@@ -426,6 +427,7 @@ Uso exclusivo en sistemas de tu propiedad o para los que dispongas de autorizaci
 
 | Versión | Cambios principales |
 |---------|---------------------|
+| v1.6.0 | Menú `--help` bilingüe: `_detect_lang()` detecta `--lang` / variable `LANG` antes del parser |
 | v1.5.0 | Salida bilingüe EN/ES mediante `--lang en|es` |
 | v1.4.0 | Modularización a paquete Python instalable (lib+cli) |
 | v1.3.1 | README bilingüe (EN/ES) |
